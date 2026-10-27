@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Настройки загрузчика"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="24dp"/>
+
+    <!-- Ручной ввод токена -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Токен авторизации (если авто-поиск не сработал):"
+        android:textSize="14sp" />
+    <EditText
+        android:id="@+id/editToken"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Вставьте токен y0_..."
+        android:layout_marginBottom="16dp" />
+
+    <!-- Качество аудио -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Качество аудио:"
+        android:textSize="16sp" />
+    <Spinner
+        android:id="@+id/spinnerQuality"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Скачивание обложки -->
+    <Switch
+        android:id="@+id/switchCover"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Скачивать обложку (cover.jpg)"
+        android:textSize="16sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Размер обложки -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Размер обложки:"
+        android:textSize="16sp" />
+    <Spinner
+        android:id="@+id/spinnerCoverSize"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp" />
+
+    <Button
+        android:id="@+id/btnSave"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Сохранить настройки" />
+
+</LinearLayout>
