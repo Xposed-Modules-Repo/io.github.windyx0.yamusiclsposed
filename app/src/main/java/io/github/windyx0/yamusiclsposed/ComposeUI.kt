@@ -1,6 +1,7 @@
 package io.github.windyx0.yamusiclsposed
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
@@ -28,7 +29,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 val Md3DarkColorScheme = darkColorScheme(
     primary = Color(0xFFFFD233),          // Yandex Yellow-Gold MD3 Accent
@@ -82,6 +89,138 @@ fun YaMusicTheme(content: @Composable () -> Unit) {
     )
 }
 
+data class UpdateInfo(
+    val hasUpdate: Boolean,
+    val latestVersionName: String,
+    val latestVersionCode: Int,
+    val releaseTitle: String,
+    val changelog: String,
+    val downloadUrl: String?,
+    val releaseUrl: String
+)
+
+sealed class UpdateState {
+    object Idle : UpdateState()
+    object Checking : UpdateState()
+    data class Available(val updateInfo: UpdateInfo) : UpdateState()
+    data class UpToDate(val currentVersion: String) : UpdateState()
+    data class Error(val message: String) : UpdateState()
+}
+
+fun openUrl(context: Context, url: String) {
+    try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (e: Throwable) {
+        Toast.makeText(context, "Не удалось открыть: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+fun fetchLatestRelease(currentVersionCode: Int = 2, currentVersionName: String = "1.1"): UpdateState {
+    return try {
+        val url = URL("https://api.github.com/repos/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed/releases/latest")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 7000
+            readTimeout = 7000
+            setRequestProperty("User-Agent", "YaMusicLsposed")
+            setRequestProperty("Accept", "application/vnd.github.v3+json")
+        }
+        if (conn.responseCode in 200..299) {
+            val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+            val json = JSONObject(responseText)
+            val tagName = json.optString("tag_name", "")
+            val releaseName = json.optString("name", tagName)
+            val body = json.optString("body", "")
+            val htmlUrl = json.optString("html_url", "https://github.com/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed/releases")
+
+            var remoteCode = 0
+            var remoteName = tagName
+            if (tagName.contains("-")) {
+                val parts = tagName.split("-", limit = 2)
+                remoteCode = parts[0].toIntOrNull() ?: 0
+                remoteName = parts[1]
+            } else {
+                remoteName = tagName.removePrefix("v")
+            }
+
+            var apkUrl: String? = null
+            val assets = json.optJSONArray("assets")
+            if (assets != null) {
+                for (i in 0 until assets.length()) {
+                    val item = assets.getJSONObject(i)
+                    val n = item.optString("name", "")
+                    if (n.endsWith(".apk", ignoreCase = true)) {
+                        apkUrl = item.optString("browser_download_url")
+                        break
+                    }
+                }
+            }
+
+            val hasUpdate = if (remoteCode > 0) {
+                remoteCode > currentVersionCode
+            } else {
+                remoteName != currentVersionName
+            }
+
+            if (hasUpdate) {
+                UpdateState.Available(
+                    UpdateInfo(
+                        hasUpdate = true,
+                        latestVersionName = remoteName,
+                        latestVersionCode = remoteCode,
+                        releaseTitle = releaseName,
+                        changelog = body,
+                        downloadUrl = apkUrl ?: htmlUrl,
+                        releaseUrl = htmlUrl
+                    )
+                )
+            } else {
+                UpdateState.UpToDate(currentVersionName)
+            }
+        } else {
+            UpdateState.Error("HTTP ${conn.responseCode}")
+        }
+    } catch (e: Throwable) {
+        UpdateState.Error(e.message ?: "Ошибка сети")
+    }
+}
+
+data class ChangelogItem(
+    val version: String,
+    val date: String,
+    val isCurrent: Boolean = false,
+    val points: List<String>
+)
+
+val changelogHistory = listOf(
+    ChangelogItem(
+        version = "v1.1",
+        date = "Ноябрь 2026",
+        isCurrent = true,
+        points = listOf(
+            "🔑 Автоматический перехват токена: модуль сам получает OAuth-токен через системный AccountManager и сетевые перехватчики OkHttp/Cronet.",
+            "🎨 Новый Material Design 3 интерфейс: современный дизайн настроек с динамическими цветами Material You на Android 12+, MD3 контейнерами и скруглениями 28dp.",
+            "🔄 Проверка обновлений и чейнджлог: встроенный апдейт-чекер с GitHub Releases и интерактивный экран истории изменений.",
+            "🛠️ Исправление для планшетов: устранено падение (ResourcesNotFoundException) при включённых службах специальных возможностей на Xiaomi HyperOS/MIUI.",
+            "💾 Межпроцессная синхронизация: сохранение токена и метаданных в файловом кэше приложения для бесперебойной работы в фоне."
+        )
+    ),
+    ChangelogItem(
+        version = "v1.0",
+        date = "Октябрь 2026",
+        isCurrent = false,
+        points = listOf(
+            "🎵 Прямое скачивание MP3: скачивание треков, альбомов и плейлистов из Яндекс Музыки в оригинальном качестве.",
+            "⚡ Параллельное скачивание: максимальная скорость благодаря параллельной загрузке в 4 потока.",
+            "🖼️ Вшивание метаданных: автоматическое добавление обложек высокого разрешения и ID3v2.4 тегов.",
+            "📅 Умная сортировка: подмена даты создания файлов для точного сохранения порядка треков в плейлисте.",
+            "📊 Оверлей загрузок: просмотр активных загрузок в реальном времени."
+        )
+    )
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun YaMusicSettingsScreen(
@@ -101,6 +240,18 @@ fun YaMusicSettingsScreen(
         var autoDetectedToken by remember { mutableStateOf(MainHook.cachedToken ?: findToken(activity)) }
 
         var isFolderPickerOpen by remember { mutableStateOf(false) }
+        var isChangelogOpen by remember { mutableStateOf(false) }
+        var updateState by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+        val coroutineScope = rememberCoroutineScope()
+
+        LaunchedEffect(Unit) {
+            if (updateState is UpdateState.Idle) {
+                updateState = UpdateState.Checking
+                withContext(Dispatchers.IO) {
+                    updateState = fetchLatestRelease(2, "1.1")
+                }
+            }
+        }
 
         Box(
             modifier = Modifier
@@ -110,11 +261,25 @@ fun YaMusicSettingsScreen(
                     interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                     indication = null
                 ) {
-                    if (!isFolderPickerOpen) onClose()
+                    if (!isFolderPickerOpen && !isChangelogOpen) onClose()
                 },
             contentAlignment = Alignment.Center
         ) {
-            if (!isFolderPickerOpen) {
+            if (isFolderPickerOpen) {
+                FolderPickerScreen(
+                    initialPath = customFolder,
+                    onPathSelected = {
+                        customFolder = it
+                        isFolderPickerOpen = false
+                    },
+                    onCancel = { isFolderPickerOpen = false }
+                )
+            } else if (isChangelogOpen) {
+                ChangelogScreen(
+                    onClose = { isChangelogOpen = false },
+                    latestReleaseBody = (updateState as? UpdateState.Available)?.updateInfo?.changelog
+                )
+            } else {
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth(0.92f)
@@ -457,7 +622,128 @@ fun YaMusicSettingsScreen(
                                 }
                             }
 
-                            // Section 4: About
+                            // Section 4: Updates & Changelog
+                            item {
+                                Md3SectionCard(title = "Обновления") {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Текущая версия: v1.1 (код 2)",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Medium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = when (val state = updateState) {
+                                                    is UpdateState.Checking -> "Проверка обновлений на GitHub..."
+                                                    is UpdateState.Available -> "Доступна версия ${state.updateInfo.latestVersionName}!"
+                                                    is UpdateState.UpToDate -> "Установлена актуальная версия"
+                                                    is UpdateState.Error -> "Ошибка проверки: ${state.message}"
+                                                    UpdateState.Idle -> "Нажмите «Проверить» для поиска"
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = when (updateState) {
+                                                    is UpdateState.Available -> MaterialTheme.colorScheme.primary
+                                                    is UpdateState.UpToDate -> Color(0xFF81C784)
+                                                    is UpdateState.Error -> MaterialTheme.colorScheme.error
+                                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                                }
+                                            )
+                                        }
+
+                                        if (updateState is UpdateState.Checking) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(20.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+
+                                    // If update is available:
+                                    if (updateState is UpdateState.Available) {
+                                        val info = (updateState as UpdateState.Available).updateInfo
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Surface(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                                        ) {
+                                            Column(modifier = Modifier.padding(12.dp)) {
+                                                Text(
+                                                    text = "🚀 Доступно обновление: ${info.releaseTitle}",
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Button(
+                                                        onClick = {
+                                                            openUrl(activity, info.downloadUrl ?: info.releaseUrl)
+                                                        },
+                                                        shape = RoundedCornerShape(10.dp),
+                                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = MaterialTheme.colorScheme.primary,
+                                                            contentColor = MaterialTheme.colorScheme.onPrimary
+                                                        )
+                                                    ) {
+                                                        Text("Скачать APK", style = MaterialTheme.typography.labelMedium)
+                                                    }
+                                                    OutlinedButton(
+                                                        onClick = { isChangelogOpen = true },
+                                                        shape = RoundedCornerShape(10.dp),
+                                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                                                    ) {
+                                                        Text("Что нового", style = MaterialTheme.typography.labelMedium)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        FilledTonalButton(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    updateState = UpdateState.Checking
+                                                    withContext(Dispatchers.IO) {
+                                                        updateState = fetchLatestRelease(2, "1.1")
+                                                    }
+                                                }
+                                            },
+                                            enabled = updateState !is UpdateState.Checking,
+                                            shape = RoundedCornerShape(10.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                        ) {
+                                            Text("Проверить", style = MaterialTheme.typography.labelMedium)
+                                        }
+
+                                        AssistChip(
+                                            onClick = { isChangelogOpen = true },
+                                            label = { Text("📋 Чейнджлог") },
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Section 5: About
                             item {
                                 Md3SectionCard(title = "О модуле (YaMusicLsposed)") {
                                     Text(
@@ -473,30 +759,28 @@ fun YaMusicSettingsScreen(
                                     ) {
                                         AssistChip(
                                             onClick = {
-                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/WindyxChannel")).apply {
-                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                }
-                                                activity.startActivity(intent)
+                                                openUrl(activity, "https://github.com/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed")
+                                            },
+                                            label = { Text("GitHub") },
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        AssistChip(
+                                            onClick = {
+                                                openUrl(activity, "https://t.me/WindyxChannel")
                                             },
                                             label = { Text("Канал (TG)") },
                                             shape = RoundedCornerShape(10.dp)
                                         )
                                         AssistChip(
                                             onClick = {
-                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/Windyx0")).apply {
-                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                }
-                                                activity.startActivity(intent)
+                                                openUrl(activity, "https://t.me/Windyx0")
                                             },
                                             label = { Text("ЛС (TG)") },
                                             shape = RoundedCornerShape(10.dp)
                                         )
                                         AssistChip(
                                             onClick = {
-                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.tiktok.com/@windyx_edits")).apply {
-                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                }
-                                                activity.startActivity(intent)
+                                                openUrl(activity, "https://www.tiktok.com/@windyx_edits")
                                             },
                                             label = { Text("TikTok") },
                                             shape = RoundedCornerShape(10.dp)
@@ -546,15 +830,6 @@ fun YaMusicSettingsScreen(
                         }
                     }
                 }
-            } else {
-                FolderPickerScreen(
-                    initialPath = customFolder,
-                    onPathSelected = {
-                        customFolder = it
-                        isFolderPickerOpen = false
-                    },
-                    onCancel = { isFolderPickerOpen = false }
-                )
             }
         }
     }
@@ -730,6 +1005,194 @@ fun FolderPickerScreen(
                 ) {
                     Text("Выбрать эту папку", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun ChangelogScreen(
+    onClose: () -> Unit,
+    latestReleaseBody: String? = null
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth(0.92f)
+            .fillMaxHeight(0.88f)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null
+            ) {},
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 6.dp,
+        shadowElevation = 10.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("📋", fontSize = 22.sp)
+                    Text(
+                        text = "История изменений",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                FilledTonalIconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(36.dp),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                ) {
+                    Text("✕", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (!latestReleaseBody.isNullOrBlank()) {
+                    item {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    text = "🚀 Заметки к последнему релизу на GitHub",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = latestReleaseBody.trim(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+
+                items(changelogHistory) { entry ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (entry.isCurrent) {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
+                        },
+                        border = if (entry.isCurrent) {
+                            androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
+                        } else null
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = entry.version,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (entry.isCurrent) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.primary
+                                        ) {
+                                            Text(
+                                                text = "ТЕКУЩАЯ",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = entry.date,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            entry.points.forEach { point ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 3.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Text(
+                                        text = "•",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(end = 8.dp)
+                                    )
+                                    Text(
+                                        text = point,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Button(
+                onClick = onClose,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                Text("Закрыть", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             }
         }
     }
