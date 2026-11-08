@@ -26,6 +26,7 @@ import android.widget.Toast
 import com.mpatric.mp3agic.ID3v24Tag
 import com.mpatric.mp3agic.Mp3File
 import de.robv.android.xposed.IXposedHookLoadPackage
+import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -95,9 +96,10 @@ fun getDownloadPath(config: Config): String {
     }
 }
 
-class MainHook : IXposedHookLoadPackage {
+class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     companion object {
+        var modulePath: String? = null
         var appContext: Context? = null
         var currentTitle: String? = null
         var currentArtist: String? = null
@@ -435,16 +437,103 @@ class MainHook : IXposedHookLoadPackage {
 
             return null
         }
+
+        fun injectModuleAssets(context: Context?) {
+            if (context == null) return
+            try {
+                val path = modulePath ?: try {
+                    context.packageManager.getPackageInfo("io.github.windyx0.yamusiclsposed", 0).applicationInfo.publicSourceDir
+                } catch (e: Throwable) { null }
+
+                if (!path.isNullOrEmpty()) {
+                    val assets = context.resources.assets
+                    val addAssetPathMethod = assets.javaClass.getMethod("addAssetPath", String::class.java)
+                    addAssetPathMethod.isAccessible = true
+                    addAssetPathMethod.invoke(assets, path)
+                    android.util.Log.e("YaMusicLsposed", "Successfully injected module asset path: $path")
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("YaMusicLsposed", "injectModuleAssets warning", t)
+            }
+        }
+    }
+
+    override fun initZygote(startupParam: IXposedHookZygoteInit.StartupParam) {
+        modulePath = startupParam.modulePath
+        android.util.Log.e("YaMusicLsposed", "initZygote: modulePath = $modulePath")
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         if (lpparam.packageName != "ru.yandex.music") return
 
         android.util.Log.e("YaMusicLsposed", "Successfully hooked into Yandex Music! Process: ${lpparam.processName}")
+        hookResourcesForMissingComposeStrings(lpparam)
         hookApplicationContext(lpparam)
         hookMediaSession(lpparam)
         hookNetworkForToken(lpparam)
         hookUI(lpparam)
+    }
+
+    private fun hookResourcesForMissingComposeStrings(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val composeStringFallback = mapOf(
+            0x7f08003d to "Selected",
+            0x7f080037 to "Not selected",
+            0x7f080039 to "On",
+            0x7f080038 to "Off",
+            0x7f080033 to "In progress",
+            0x7f080034 to "Indeterminate",
+            0x7f080041 to "Switch",
+            0x7f080042 to "Tab",
+            0x7f080030 to "Dialog",
+            0x7f08000c to "Close",
+            0x7f08000d to "Close",
+            0x7f08000e to "Collapsed",
+            0x7f080032 to "Expanded",
+            0x7f08002e to "Error",
+            0x7f08002f to "Popup",
+            0x7f080031 to "Menu",
+            0x7f080036 to "Navigation",
+            0x7f08003e to "Dismiss",
+            0x7f080040 to "Suggestions",
+            0x7f080043 to "%d%%",
+            0x7f080050 to "Tooltip",
+            0x7f080051 to "Tooltip",
+            0x7f080052 to "Tooltip",
+            0x7f080053 to "Tooltip"
+        )
+
+        val hook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                if (param.hasThrowable()) {
+                    val id = param.args.getOrNull(0) as? Int ?: return
+                    val fallback = composeStringFallback[id]
+                    if (fallback != null) {
+                        param.result = fallback
+                    } else if ((id ushr 16) == 0x7f08 || (id in 0x7f080000..0x7f0800ff)) {
+                        param.result = ""
+                    }
+                }
+            }
+        }
+
+        try {
+            XposedBridge.hookAllMethods(android.content.res.Resources::class.java, "getText", hook)
+            XposedBridge.hookAllMethods(android.content.res.Resources::class.java, "getString", hook)
+        } catch (t: Throwable) {
+            android.util.Log.e("YaMusicLsposed", "Failed to hook Resources.getText/getString", t)
+        }
+
+        for (clsName in arrayOf("android.content.res.MiuiResources", "android.content.res.MiuiResourcesImpl")) {
+            try {
+                val cls = XposedHelpers.findClassIfExists(clsName, lpparam.classLoader)
+                    ?: XposedHelpers.findClassIfExists(clsName, null)
+                if (cls != null) {
+                    XposedBridge.hookAllMethods(cls, "getText", hook)
+                    XposedBridge.hookAllMethods(cls, "getString", hook)
+                    android.util.Log.e("YaMusicLsposed", "Hooked $clsName successfully")
+                }
+            } catch (t: Throwable) {}
+        }
     }
 
     private fun hookApplicationContext(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -457,6 +546,7 @@ class MainHook : IXposedHookLoadPackage {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val app = param.thisObject as? Application ?: return
                         appContext = app
+                        injectModuleAssets(app)
                         thread {
                             try {
                                 findToken(app)
@@ -962,6 +1052,7 @@ class MainHook : IXposedHookLoadPackage {
     }
 
     private fun showSettingsOverlay(activity: Activity) {
+        injectModuleAssets(activity)
         val root = activity.findViewById<ViewGroup>(android.R.id.content)
         
         val decorView = activity.window.decorView
@@ -1022,6 +1113,7 @@ class MainHook : IXposedHookLoadPackage {
     }
 
     private fun showDownloadsOverlay(activity: Activity) {
+        injectModuleAssets(activity)
         val decorView = activity.window.decorView
         val bitmap = try {
             val bmp = android.graphics.Bitmap.createBitmap(decorView.width, decorView.height, android.graphics.Bitmap.Config.ARGB_8888)

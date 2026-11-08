@@ -22,6 +22,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -309,6 +311,9 @@ fun YaMusicSettingsScreen(
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         FilterChip(
+                                            modifier = Modifier.semantics {
+                                                stateDescription = if (quality == 320) "Выбрано" else "Не выбрано"
+                                            },
                                             selected = quality == 320,
                                             onClick = { quality = 320 },
                                             label = { Text("320 kbps (HQ)") },
@@ -319,6 +324,9 @@ fun YaMusicSettingsScreen(
                                             )
                                         )
                                         FilterChip(
+                                            modifier = Modifier.semantics {
+                                                stateDescription = if (quality == 192) "Выбрано" else "Не выбрано"
+                                            },
                                             selected = quality == 192,
                                             onClick = { quality = 192 },
                                             label = { Text("192 kbps (Standard)") },
@@ -361,6 +369,9 @@ fun YaMusicSettingsScreen(
                                                 )
                                             }
                                             Switch(
+                                                modifier = Modifier.semantics {
+                                                    stateDescription = if (cover) "Включено" else "Выключено"
+                                                },
                                                 checked = cover,
                                                 onCheckedChange = { cover = it }
                                             )
@@ -399,6 +410,9 @@ fun YaMusicSettingsScreen(
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     RadioButton(
+                                                        modifier = Modifier.semantics {
+                                                            stateDescription = if (folderType == type) "Выбрано" else "Не выбрано"
+                                                        },
                                                         selected = folderType == type,
                                                         onClick = { folderType = type }
                                                     )
