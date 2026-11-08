@@ -1,7 +1,9 @@
 package io.github.windyx0.yamusiclsposed
 
+import android.accounts.AccountManager
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Application
 import android.app.DownloadManager
 import android.content.Context
 import android.graphics.BitmapFactory
@@ -55,7 +57,20 @@ fun saveConfig(activity: Activity, config: Config) {
         .putString("folder_type", config.folderType)
         .putString("custom_folder", config.customFolder)
         .putString("token", config.manualToken)
-        .apply()
+        .commit()
+
+    if (config.manualToken.isNotBlank()) {
+        MainHook.onTokenFound(config.manualToken, "Manual Config", activity)
+    } else {
+        MainHook.cachedToken = null
+        try {
+            File(activity.filesDir, "yamusic_lsposed_token.txt").delete()
+            File(activity.applicationInfo.dataDir, "yamusic_lsposed_token.txt").delete()
+        } catch (e: Throwable) {}
+        thread {
+            MainHook.findToken(activity)
+        }
+    }
 }
 
 fun loadConfig(activity: Activity): Config {
@@ -70,6 +85,8 @@ fun loadConfig(activity: Activity): Config {
     )
 }
 
+fun findToken(context: Context): String? = MainHook.findToken(context)
+
 fun getDownloadPath(config: Config): String {
     return when (config.folderType) {
         "Downloads" -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath + "/YaMusicDL"
@@ -81,6 +98,7 @@ fun getDownloadPath(config: Config): String {
 class MainHook : IXposedHookLoadPackage {
 
     companion object {
+        var appContext: Context? = null
         var currentTitle: String? = null
         var currentArtist: String? = null
         var currentMediaId: String? = null
@@ -93,15 +111,361 @@ class MainHook : IXposedHookLoadPackage {
 
         @Volatile var isPlaylistDownloading = false
         @Volatile var cancelPlaylistDownload = false
+
+        fun isValidToken(str: String?): Boolean {
+            if (str.isNullOrBlank()) return false
+            val s = str.trim()
+            if (s.length < 20) return false
+            if (s.contains(" ") || s.contains("\n") || s.contains("\r") || s.contains("\t")) return false
+            if (s.startsWith("y0_") || s.startsWith("y1_") || s.startsWith("y0-") || 
+                s.startsWith("AQAAAA") || s.startsWith("AgAAAA")) {
+                return true
+            }
+            if (s.length >= 25 && Pattern.compile("^[a-zA-Z0-9_-]+$").matcher(s).matches()) {
+                if (!s.contains(".") && (s.contains("_") || s.length >= 32)) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        fun onTokenFound(token: String, source: String, context: Context? = null) {
+            val clean = token.trim()
+            if (!isValidToken(clean)) return
+            cachedToken = clean
+            android.util.Log.e("YaMusicLsposed", "Token captured via $source: ${clean.take(8)}... (len=${clean.length})")
+            
+            val ctx = context ?: appContext
+            if (ctx != null) {
+                try {
+                    ctx.getSharedPreferences("YaMusicDL_Prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("token", clean)
+                        .commit()
+                } catch (e: Throwable) {}
+
+                try {
+                    File(ctx.filesDir, "yamusic_lsposed_token.txt").writeText(clean)
+                } catch (e: Throwable) {}
+
+                try {
+                    File(ctx.applicationInfo.dataDir, "yamusic_lsposed_token.txt").writeText(clean)
+                } catch (e: Throwable) {}
+            }
+        }
+
+        fun inspectUrl(urlStr: String) {
+            if (urlStr.isEmpty()) return
+            try {
+                val logFile = File("/sdcard/Download/YaMusicLsposed_Meta.txt")
+                logFile.appendText("OAuth Request URL: $urlStr\n")
+            } catch (e: Throwable) {}
+
+            val mPlaylist = Pattern.compile("/users/([^/]+)/playlists/([^/?]+)").matcher(urlStr)
+            if (mPlaylist.find()) {
+                val extractedUserId = mPlaylist.group(1)
+                val extractedPlaylistId = mPlaylist.group(2)
+                if (extractedPlaylistId != "favorites" && !urlStr.contains("tracks")) {
+                    cachedUserId = extractedUserId
+                    cachedPlaylistId = extractedPlaylistId
+                    cachedAlbumId = null
+                }
+            }
+
+            val mAlbum = Pattern.compile("/albums/([^/?]+)").matcher(urlStr)
+            if (mAlbum.find()) {
+                val extractedAlbumId = mAlbum.group(1)
+                if (!urlStr.contains("tracks")) {
+                    cachedAlbumId = extractedAlbumId
+                    cachedUserId = null
+                    cachedPlaylistId = null
+                }
+            }
+
+            if (cachedUserId != null || cachedAlbumId != null) {
+                appContext?.let { ctx ->
+                    try {
+                        val f = File(ctx.filesDir, "yamusic_current_playlist.txt")
+                        f.writeText("${cachedUserId ?: ""}\n${cachedPlaylistId ?: ""}\n${cachedAlbumId ?: ""}")
+                    } catch (e: Throwable) {}
+                }
+            }
+        }
+
+        fun checkHeaderKeyValue(key: String?, value: String?, context: Context?) {
+            if (key == null || value == null) return
+            if (key.equals("Authorization", ignoreCase = true)) {
+                if (value.startsWith("OAuth ", ignoreCase = true)) {
+                    val token = value.substring(6).trim()
+                    if (isValidToken(token)) {
+                        onTokenFound(token, "Authorization: OAuth", context)
+                    }
+                } else if (value.startsWith("Bearer ", ignoreCase = true)) {
+                    val token = value.substring(7).trim()
+                    if (isValidToken(token)) {
+                        onTokenFound(token, "Authorization: Bearer", context)
+                    }
+                }
+            } else if (key.equals("X-OAuth-Token", ignoreCase = true) || key.equals("OAuth-Token", ignoreCase = true)) {
+                val token = value.trim()
+                if (isValidToken(token)) {
+                    onTokenFound(token, key, context)
+                }
+            }
+        }
+
+        fun checkHeaderLine(line: String?, context: Context?) {
+            if (line == null) return
+            if (line.startsWith("Authorization:", ignoreCase = true)) {
+                val value = line.substring(14).trim()
+                if (value.startsWith("OAuth ", ignoreCase = true)) {
+                    val token = value.substring(6).trim()
+                    if (isValidToken(token)) {
+                        onTokenFound(token, "Authorization Line (OAuth)", context)
+                    }
+                } else if (value.startsWith("Bearer ", ignoreCase = true)) {
+                    val token = value.substring(7).trim()
+                    if (isValidToken(token)) {
+                        onTokenFound(token, "Authorization Line (Bearer)", context)
+                    }
+                }
+            }
+        }
+
+        fun inspectOkHttpRequest(req: Any, context: Context?) {
+            try {
+                val authHeader = XposedHelpers.callMethod(req, "header", "Authorization") as? String
+                if (!authHeader.isNullOrEmpty()) {
+                    if (authHeader.startsWith("OAuth ", ignoreCase = true)) {
+                        val token = authHeader.substring(6).trim()
+                        if (isValidToken(token)) {
+                            onTokenFound(token, "OkHttp Request Authorization", context)
+                        }
+                    } else if (authHeader.startsWith("Bearer ", ignoreCase = true)) {
+                        val token = authHeader.substring(7).trim()
+                        if (isValidToken(token)) {
+                            onTokenFound(token, "OkHttp Request Bearer", context)
+                        }
+                    }
+                }
+                val urlObj = XposedHelpers.callMethod(req, "url")
+                val urlStr = urlObj?.toString() ?: ""
+                if (urlStr.isNotEmpty()) {
+                    inspectUrl(urlStr)
+                }
+            } catch (e: Throwable) {}
+        }
+
+        fun findTokenFromAccountManager(context: Context): String? {
+            try {
+                val am = AccountManager.get(context)
+                val allAccounts = am.accounts
+                for (acc in allAccounts) {
+                    val type = acc.type.lowercase()
+                    if (type.contains("yandex") || type.contains("passport")) {
+                        val tokenTypes = arrayOf("oauth", "Passport", "music", "ru.yandex.music", "login", "web", "default", "")
+                        for (tt in tokenTypes) {
+                            try {
+                                val tok = am.peekAuthToken(acc, tt)?.trim()
+                                if (isValidToken(tok)) {
+                                    return tok
+                                }
+                            } catch (e: Throwable) {}
+                        }
+
+                        try {
+                            val pass = am.getPassword(acc)?.trim()
+                            if (isValidToken(pass)) {
+                                return pass
+                            }
+                        } catch (e: Throwable) {}
+
+                        val userKeys = arrayOf("oauth_token", "token", "access_token", "passport_token", "auth_token", "oauth")
+                        for (uk in userKeys) {
+                            try {
+                                val ud = am.getUserData(acc, uk)?.trim()
+                                if (isValidToken(ud)) {
+                                    return ud
+                                }
+                            } catch (e: Throwable) {}
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("YaMusicLsposed", "AccountManager lookup error: ${e.message}")
+            }
+            return null
+        }
+
+        fun findTokenFromStorage(context: Context): String? {
+            try {
+                val prefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
+                if (prefsDir.exists() && prefsDir.isDirectory) {
+                    for (f in prefsDir.listFiles() ?: emptyArray()) {
+                        if (f.name.endsWith(".xml")) {
+                            val prefName = f.name.removeSuffix(".xml")
+                            if (prefName == "YaMusicDL_Prefs") continue
+                            try {
+                                val sp = context.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                                for ((_, value) in sp.all) {
+                                    val s = value?.toString()?.trim() ?: continue
+                                    if (isValidToken(s)) {
+                                        return s
+                                    }
+                                }
+                            } catch (e: Throwable) {}
+                        }
+                    }
+                }
+
+                val targetDirs = mutableListOf<File>()
+                val dataDir = File(context.applicationInfo.dataDir)
+                targetDirs.add(File(dataDir, "shared_prefs"))
+                targetDirs.add(File(dataDir, "files/datastore"))
+                targetDirs.add(File(dataDir, "databases"))
+                targetDirs.add(File(dataDir, "files"))
+                targetDirs.add(File(dataDir, "no_backup"))
+
+                try {
+                    val deContext = context.createDeviceProtectedStorageContext()
+                    val deDir = File(deContext.applicationInfo.dataDir)
+                    targetDirs.add(File(deDir, "shared_prefs"))
+                    targetDirs.add(File(deDir, "files/datastore"))
+                    targetDirs.add(File(deDir, "databases"))
+                    targetDirs.add(File(deDir, "files"))
+                } catch (e: Throwable) {}
+
+                val tokenPatterns = listOf(
+                    Pattern.compile("(y0_[a-zA-Z0-9_-]{20,})"),
+                    Pattern.compile("(A[Qg]AAAA[a-zA-Z0-9_-]{20,})"),
+                    Pattern.compile("OAuth\\s+([a-zA-Z0-9_.-]{20,})"),
+                    Pattern.compile("\"(?:access_token|oauth_token|token|passport_token)\"\\s*:\\s*\"([a-zA-Z0-9_.-]{20,})\"")
+                )
+
+                for (dir in targetDirs) {
+                    if (!dir.exists() || !dir.isDirectory) continue
+                    val files = dir.listFiles() ?: continue
+                    for (file in files) {
+                        if (!file.isFile || file.length() == 0L || file.length() > 3 * 1024 * 1024) continue
+                        val name = file.name.lowercase()
+                        if (name.endsWith(".apk") || name.endsWith(".dex") || name.endsWith(".so") || name.endsWith(".mp3")) continue
+                        if (name == "yamusicdl_prefs.xml") continue
+
+                        try {
+                            val bytes = file.readBytes()
+                            val text = String(bytes, Charsets.ISO_8859_1)
+                            for (pattern in tokenPatterns) {
+                                val m = pattern.matcher(text)
+                                if (m.find()) {
+                                    val candidate = m.group(1).trim()
+                                    if (isValidToken(candidate)) {
+                                        return candidate
+                                    }
+                                }
+                            }
+                        } catch (e: Throwable) {}
+                    }
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("YaMusicLsposed", "Storage search error: ${e.message}")
+            }
+            return null
+        }
+
+        fun findToken(context: Context): String? {
+            try {
+                val prefs = context.getSharedPreferences("YaMusicDL_Prefs", Context.MODE_PRIVATE)
+                val savedToken = prefs.getString("token", "")?.trim()
+                if (!savedToken.isNullOrEmpty() && isValidToken(savedToken)) {
+                    cachedToken = savedToken
+                    return savedToken
+                }
+            } catch (e: Throwable) {}
+
+            if (!cachedToken.isNullOrEmpty() && isValidToken(cachedToken)) {
+                return cachedToken
+            }
+
+            try {
+                val file = File(context.filesDir, "yamusic_lsposed_token.txt")
+                if (file.exists()) {
+                    val t = file.readText().trim()
+                    if (isValidToken(t)) {
+                        cachedToken = t
+                        return t
+                    }
+                }
+            } catch (e: Throwable) {}
+
+            try {
+                val file = File(context.applicationInfo.dataDir, "yamusic_lsposed_token.txt")
+                if (file.exists()) {
+                    val t = file.readText().trim()
+                    if (isValidToken(t)) {
+                        cachedToken = t
+                        return t
+                    }
+                }
+            } catch (e: Throwable) {}
+
+            val amToken = findTokenFromAccountManager(context)
+            if (!amToken.isNullOrEmpty()) {
+                onTokenFound(amToken, "AccountManager", context)
+                return amToken
+            }
+
+            val storageToken = findTokenFromStorage(context)
+            if (!storageToken.isNullOrEmpty()) {
+                onTokenFound(storageToken, "App Storage", context)
+                return storageToken
+            }
+
+            if (context is Activity) {
+                try {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                    if (clipboard != null && clipboard.hasPrimaryClip()) {
+                        val clipText = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim() ?: ""
+                        if (isValidToken(clipText)) {
+                            onTokenFound(clipText, "Clipboard", context)
+                            return clipText
+                        }
+                    }
+                } catch (e: Throwable) {}
+            }
+
+            return null
+        }
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         if (lpparam.packageName != "ru.yandex.music") return
 
-        android.util.Log.e("YaMusicLsposed", "Successfully hooked into Yandex Music!")
+        android.util.Log.e("YaMusicLsposed", "Successfully hooked into Yandex Music! Process: ${lpparam.processName}")
+        hookApplicationContext(lpparam)
         hookMediaSession(lpparam)
         hookNetworkForToken(lpparam)
         hookUI(lpparam)
+    }
+
+    private fun hookApplicationContext(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                "android.app.Application",
+                lpparam.classLoader,
+                "onCreate",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val app = param.thisObject as? Application ?: return
+                        appContext = app
+                        thread {
+                            try {
+                                findToken(app)
+                            } catch (e: Throwable) {}
+                        }
+                    }
+                }
+            )
+        } catch (t: Throwable) {}
     }
 
     private fun hookMediaSession(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -126,6 +490,13 @@ class MainHook : IXposedHookLoadPackage {
                             currentMediaId = newId
                             currentAlbumArtUri = newArtUri
                             currentDuration = newDuration
+
+                            appContext?.let { ctx ->
+                                try {
+                                    val f = File(ctx.filesDir, "yamusic_current_media.txt")
+                                    f.writeText("$newId\n$newTitle\n${newArtist ?: ""}\n${newArtUri ?: ""}\n$newDuration")
+                                } catch (e: Throwable) {}
+                            }
                             try {
                                 val keys = metadata.keySet()
                                   for (key in keys) {
@@ -162,6 +533,15 @@ class MainHook : IXposedHookLoadPackage {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val activity = param.thisObject as Activity
                         if (activity.packageName != "ru.yandex.music") return
+                        appContext = activity.applicationContext
+
+                        if (cachedToken == null) {
+                            thread {
+                                try {
+                                    findToken(activity)
+                                } catch (e: Throwable) {}
+                            }
+                        }
                         
                         // Parse playlist/album ID from Intent extras
                         try {
@@ -189,6 +569,13 @@ class MainHook : IXposedHookLoadPackage {
                                         cachedUserId = null
                                         cachedPlaylistId = null
                                     }
+                                }
+
+                                if (cachedUserId != null || cachedAlbumId != null) {
+                                    try {
+                                        val f = File(activity.filesDir, "yamusic_current_playlist.txt")
+                                        f.writeText("${cachedUserId ?: ""}\n${cachedPlaylistId ?: ""}\n${cachedAlbumId ?: ""}")
+                                    } catch (e: Throwable) {}
                                 }
                             }
                         } catch (e: Throwable) {}
@@ -485,6 +872,24 @@ class MainHook : IXposedHookLoadPackage {
                                     return@setOnClickListener
                                 }
 
+                                if (cachedUserId == null && cachedPlaylistId == null && cachedAlbumId == null) {
+                                    try {
+                                        val f = File(activity.filesDir, "yamusic_current_playlist.txt")
+                                        if (f.exists()) {
+                                            val lines = f.readLines()
+                                            val u = lines.getOrNull(0)?.trim()?.takeIf { it.isNotEmpty() }
+                                            val p = lines.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
+                                            val a = lines.getOrNull(2)?.trim()?.takeIf { it.isNotEmpty() }
+                                            if (a != null) {
+                                                cachedAlbumId = a
+                                            } else if (u != null && p != null) {
+                                                cachedUserId = u
+                                                cachedPlaylistId = p
+                                            }
+                                        }
+                                    } catch (e: Throwable) {}
+                                }
+
                                 val uId = cachedUserId
                                 val pId = cachedPlaylistId
                                 val aId = cachedAlbumId
@@ -494,7 +899,7 @@ class MainHook : IXposedHookLoadPackage {
                                 }
                                 
                                 val token = findToken(activity)
-                                if (token == null) {
+                                if (token.isNullOrEmpty()) {
                                     Toast.makeText(activity, "Токен не найден! Пожалуйста, прослушайте любой трек или войдите в аккаунт.", Toast.LENGTH_LONG).show()
                                     return@setOnClickListener
                                 }
@@ -667,93 +1072,142 @@ class MainHook : IXposedHookLoadPackage {
         composeView.animate().alpha(1f).setDuration(250).start()
     }
     private fun hookNetworkForToken(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val hook = object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                try {
-                    val key = param.args[0] as? String
-                    val value = param.args[1] as? String
-                    
-                    if (key != null && key.equals("Authorization", ignoreCase = true) && value != null && value.startsWith("OAuth ")) {
-                        cachedToken = value.removePrefix("OAuth ").trim()
-                    }
-                    
-                    var urlStr = ""
-                    if (param.thisObject is java.net.HttpURLConnection) {
-                        urlStr = (param.thisObject as java.net.HttpURLConnection).url.toString()
-                    } else {
-                        try {
-                            val urlObj = XposedHelpers.getObjectField(param.thisObject, "url")
-                            if (urlObj != null) {
-                                urlStr = urlObj.toString()
-                            }
-                        } catch (e: Throwable) {}
-                    }
-                    
-                    if (urlStr.isNotEmpty()) {
-                        try {
-                            val logFile = java.io.File("/sdcard/Download/YaMusicLsposed_Meta.txt")
-                            logFile.appendText("OAuth Request URL: $urlStr\n")
-                        } catch (e: Throwable) {}
-                        
-                        val mPlaylist = java.util.regex.Pattern.compile("/users/([^/]+)/playlists/([^/?]+)").matcher(urlStr)
-                        if (mPlaylist.find()) {
-                            val extractedUserId = mPlaylist.group(1)
-                            val extractedPlaylistId = mPlaylist.group(2)
-                            if (extractedPlaylistId != "favorites" && !urlStr.contains("tracks")) {
-                                cachedUserId = extractedUserId
-                                cachedPlaylistId = extractedPlaylistId
-                                cachedAlbumId = null
-                            }
-                        }
+        // 1. OkHttp Request$Builder.build()
+        try {
+            val reqBuilderClass = XposedHelpers.findClass("okhttp3.Request\$Builder", lpparam.classLoader)
+            XposedHelpers.findAndHookMethod(reqBuilderClass, "build", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val req = param.result ?: return
+                    inspectOkHttpRequest(req, appContext)
+                }
+            })
+        } catch (t: Throwable) {}
 
-                        val mAlbum = java.util.regex.Pattern.compile("/albums/([^/?]+)").matcher(urlStr)
-                        if (mAlbum.find()) {
-                            val extractedAlbumId = mAlbum.group(1)
-                            if (!urlStr.contains("tracks")) {
-                                cachedAlbumId = extractedAlbumId
-                                cachedUserId = null
-                                cachedPlaylistId = null
-                            }
-                        }
-                    }
-                } catch(e: Throwable) {}
+        // 2. OkHttp RealInterceptorChain.proceed(Request) and Interceptor$Chain.proceed(Request)
+        try {
+            val chainClass = XposedHelpers.findClass("okhttp3.internal.http.RealInterceptorChain", lpparam.classLoader)
+            XposedBridge.hookAllMethods(chainClass, "proceed", object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val req = param.args.firstOrNull() ?: return
+                    inspectOkHttpRequest(req, appContext)
+                }
+            })
+        } catch (t: Throwable) {}
+
+        try {
+            val chainInterface = XposedHelpers.findClass("okhttp3.Interceptor\$Chain", lpparam.classLoader)
+            XposedBridge.hookAllMethods(chainInterface, "proceed", object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val req = param.args.firstOrNull() ?: return
+                    inspectOkHttpRequest(req, appContext)
+                }
+            })
+        } catch (t: Throwable) {}
+
+        // 3. OkHttp Request$Builder header / addHeader
+        try {
+            val reqBuilderClass = XposedHelpers.findClass("okhttp3.Request\$Builder", lpparam.classLoader)
+            val builderHook = object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val k = param.args.getOrNull(0) as? String
+                    val v = param.args.getOrNull(1) as? String
+                    checkHeaderKeyValue(k, v, appContext)
+                }
             }
-        }
-
-        try {
-            XposedHelpers.findAndHookMethod(HttpURLConnection::class.java, "setRequestProperty", String::class.java, String::class.java, hook)
-            XposedHelpers.findAndHookMethod(HttpURLConnection::class.java, "addRequestProperty", String::class.java, String::class.java, hook)
+            XposedBridge.hookAllMethods(reqBuilderClass, "header", builderHook)
+            XposedBridge.hookAllMethods(reqBuilderClass, "addHeader", builderHook)
         } catch (t: Throwable) {}
 
+        // 4. OkHttp Headers$Builder add / set
         try {
-            XposedHelpers.findAndHookMethod("okhttp3.Request\$Builder", lpparam.classLoader, "header", String::class.java, String::class.java, hook)
-            XposedHelpers.findAndHookMethod("okhttp3.Request\$Builder", lpparam.classLoader, "addHeader", String::class.java, String::class.java, hook)
-        } catch (t: Throwable) {}
-    }
-
-    private fun findToken(activity: Activity): String? {
-        if (cachedToken != null) return cachedToken
-        try {
-            val prefsDir = File(activity.applicationInfo.dataDir, "shared_prefs")
-            if (prefsDir.exists() && prefsDir.isDirectory) {
-                for (file in prefsDir.listFiles() ?: emptyArray()) {
-                    if (file.name.endsWith(".xml")) {
-                        val content = file.readText()
-                        val matcher = Pattern.compile("(y0_[a-zA-Z0-9_-]+|A[Qg]AAAA[a-zA-Z0-9_-]+)").matcher(content)
-                        if (matcher.find()) {
-                            cachedToken = matcher.group(1)
-                            return cachedToken
-                        }
+            val headersBuilderClass = XposedHelpers.findClass("okhttp3.Headers\$Builder", lpparam.classLoader)
+            val hbHook = object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val arg0 = param.args.getOrNull(0) as? String ?: return
+                    if (param.args.size > 1) {
+                        val arg1 = param.args.getOrNull(1) as? String
+                        checkHeaderKeyValue(arg0, arg1, appContext)
+                    } else {
+                        checkHeaderLine(arg0, appContext)
                     }
                 }
             }
-        } catch (t: Throwable) {
-            android.util.Log.e("YaMusicLsposed", "Token search error - ${t.message}")
+            XposedBridge.hookAllMethods(headersBuilderClass, "add", hbHook)
+            XposedBridge.hookAllMethods(headersBuilderClass, "set", hbHook)
+        } catch (t: Throwable) {}
+
+        // 5. HttpURLConnection setRequestProperty / addRequestProperty
+        try {
+            val httpConnHook = object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val k = param.args.getOrNull(0) as? String
+                    val v = param.args.getOrNull(1) as? String
+                    checkHeaderKeyValue(k, v, appContext)
+                    try {
+                        val url = (param.thisObject as? HttpURLConnection)?.url?.toString() ?: ""
+                        if (url.isNotEmpty()) inspectUrl(url)
+                    } catch (e: Throwable) {}
+                }
+            }
+            XposedHelpers.findAndHookMethod(HttpURLConnection::class.java, "setRequestProperty", String::class.java, String::class.java, httpConnHook)
+            XposedHelpers.findAndHookMethod(HttpURLConnection::class.java, "addRequestProperty", String::class.java, String::class.java, httpConnHook)
+        } catch (t: Throwable) {}
+
+        // 6. Cronet UrlRequest$Builder / ExperimentalUrlRequest$Builder
+        for (cronetClassName in arrayOf("org.chromium.net.UrlRequest\$Builder", "org.chromium.net.ExperimentalUrlRequest\$Builder")) {
+            try {
+                val cronetClass = XposedHelpers.findClass(cronetClassName, lpparam.classLoader)
+                XposedBridge.hookAllMethods(cronetClass, "addHeader", object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val k = param.args.getOrNull(0) as? String
+                        val v = param.args.getOrNull(1) as? String
+                        checkHeaderKeyValue(k, v, appContext)
+                    }
+                })
+            } catch (t: Throwable) {}
         }
-        return null
+
+        // 7. Common Yandex Auth / Passport SDK constructors
+        val authClasses = listOf(
+            "com.yandex.authsdk.YandexAuthToken",
+            "com.yandex.passport.api.PassportToken",
+            "com.yandex.passport.internal.entities.Token",
+            "ru.yandex.music.data.auth.PassportToken"
+        )
+        for (clsName in authClasses) {
+            try {
+                val cls = XposedHelpers.findClass(clsName, lpparam.classLoader)
+                XposedBridge.hookAllConstructors(cls, object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        for (arg in param.args) {
+                            val s = arg?.toString()?.trim() ?: continue
+                            if (isValidToken(s)) {
+                                onTokenFound(s, "Constructor $clsName", appContext)
+                            }
+                        }
+                    }
+                })
+            } catch (t: Throwable) {}
+        }
     }
 
     private fun startDownloadProcess(activity: Activity, onStateChange: (Int, Float) -> Unit) {
+        if (currentMediaId == null) {
+            try {
+                val f = File(activity.filesDir, "yamusic_current_media.txt")
+                if (f.exists()) {
+                    val lines = f.readLines()
+                    if (lines.isNotEmpty() && lines[0].isNotBlank()) {
+                        currentMediaId = lines[0]
+                        if (lines.size > 1 && currentTitle == null) currentTitle = lines[1]
+                        if (lines.size > 2 && currentArtist == null) currentArtist = lines[2]
+                        if (lines.size > 3 && currentAlbumArtUri == null) currentAlbumArtUri = lines[3]
+                        if (lines.size > 4 && currentDuration == 0L) currentDuration = lines[4].toLongOrNull() ?: 0L
+                    }
+                }
+            } catch (e: Throwable) {}
+        }
+
         val title = currentTitle ?: "Unknown Title"
         val artist = currentArtist ?: "Unknown Artist"
         val rawMediaId = currentMediaId
@@ -763,23 +1217,11 @@ class MainHook : IXposedHookLoadPackage {
             return
         }
 
-        val prefs = activity.getSharedPreferences("YaMusicDL_Prefs", Context.MODE_PRIVATE)
-        var token = prefs.getString("token", "")
-        if (token.isNullOrEmpty()) {
-            token = findToken(activity)
-        }
+        val token = findToken(activity)
 
         if (token.isNullOrEmpty()) {
-            val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            val clipText = clipboard.primaryClip?.getItemAt(0)?.coerceToText(activity)?.toString()?.trim() ?: ""
-            if (clipText.startsWith("y0_") || clipText.startsWith("A") && clipText.contains("AAAA")) {
-                token = clipText
-                prefs.edit().putString("token", token).apply()
-                Toast.makeText(activity, "Токен загружен из буфера обмена!", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(activity, "Необходим токен авторизации! Удерживайте кнопку загрузки.", Toast.LENGTH_LONG).show()
-                return
-            }
+            Toast.makeText(activity, "Необходим токен авторизации! Включите любой трек или введите его в настройках.", Toast.LENGTH_LONG).show()
+            return
         }
 
         val config = loadConfig(activity)
