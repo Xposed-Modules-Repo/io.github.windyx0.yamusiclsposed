@@ -200,11 +200,11 @@ val changelogHistory = listOf(
         date = "Ноябрь 2026",
         isCurrent = true,
         points = listOf(
-            "🔑 Автоматический перехват токена: модуль сам получает OAuth-токен через системный AccountManager и сетевые перехватчики OkHttp/Cronet.",
-            "🎨 Новый Material Design 3 интерфейс: современный дизайн настроек с динамическими цветами Material You на Android 12+, MD3 контейнерами и скруглениями 28dp.",
-            "🔄 Проверка обновлений и чейнджлог: встроенный апдейт-чекер с GitHub Releases и интерактивный экран истории изменений.",
-            "🛠️ Исправление для планшетов: устранено падение (ResourcesNotFoundException) при включённых службах специальных возможностей на Xiaomi HyperOS/MIUI.",
-            "💾 Межпроцессная синхронизация: сохранение токена и метаданных в файловом кэше приложения для бесперебойной работы в фоне."
+            "Автоматический перехват токена: модуль сам получает OAuth-токен через системный AccountManager и сетевые перехватчики OkHttp/Cronet.",
+            "Новый интерфейс Material Design 3: современный дизайн настроек с динамическими цветами Material You на Android 12+, MD3 контейнерами и скруглениями 28dp.",
+            "Проверка обновлений и чейнджлог: встроенная проверка обновлений с GitHub Releases и интерактивный экран истории изменений.",
+            "Исправление для планшетов: устранено падение (ResourcesNotFoundException) при включённых службах специальных возможностей на Xiaomi HyperOS/MIUI.",
+            "Межпроцессная синхронизация: сохранение токена и метаданных в файловом кэше приложения для бесперебойной работы в фоне."
         )
     ),
     ChangelogItem(
@@ -212,11 +212,11 @@ val changelogHistory = listOf(
         date = "Октябрь 2026",
         isCurrent = false,
         points = listOf(
-            "🎵 Прямое скачивание MP3: скачивание треков, альбомов и плейлистов из Яндекс Музыки в оригинальном качестве.",
-            "⚡ Параллельное скачивание: максимальная скорость благодаря параллельной загрузке в 4 потока.",
-            "🖼️ Вшивание метаданных: автоматическое добавление обложек высокого разрешения и ID3v2.4 тегов.",
-            "📅 Умная сортировка: подмена даты создания файлов для точного сохранения порядка треков в плейлисте.",
-            "📊 Оверлей загрузок: просмотр активных загрузок в реальном времени."
+            "Прямое скачивание MP3: скачивание треков, альбомов и плейлистов из Яндекс Музыки в оригинальном качестве.",
+            "Параллельное скачивание: максимальная скорость благодаря параллельной загрузке в 4 потока.",
+            "Вшивание метаданных: автоматическое добавление обложек высокого разрешения и ID3v2.4 тегов.",
+            "Умная сортировка: подмена даты создания файлов для точного сохранения порядка треков в плейлисте.",
+            "Оверлей загрузок: просмотр активных загрузок в реальном времени."
         )
     )
 )
@@ -404,7 +404,7 @@ fun YaMusicSettingsScreen(
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Text(
-                                                text = "✓ Токен активен (автоматически):\n$preview",
+                                                text = "Токен активен (автоматически):\n$preview",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onTertiaryContainer,
                                                 fontWeight = FontWeight.Medium,
@@ -418,7 +418,7 @@ fun YaMusicSettingsScreen(
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Text(
-                                                text = "⚠ Токен пока не перехвачен. Запустите любой трек в плеере.",
+                                                text = "Токен пока не перехвачен. Запустите любой трек в плеере.",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
@@ -608,7 +608,6 @@ fun YaMusicSettingsScreen(
                                                     .padding(14.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Text("📁", fontSize = 18.sp, modifier = Modifier.padding(end = 10.dp))
                                                 Text(
                                                     text = customFolder.ifEmpty { "Нажмите для выбора папки..." },
                                                     style = MaterialTheme.typography.bodyMedium,
@@ -657,9 +656,10 @@ fun YaMusicSettingsScreen(
                                         }
 
                                         if (updateState is UpdateState.Checking) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(20.dp),
-                                                strokeWidth = 2.dp,
+                                            Text(
+                                                text = "...",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.primary
                                             )
                                         }
@@ -677,7 +677,7 @@ fun YaMusicSettingsScreen(
                                         ) {
                                             Column(modifier = Modifier.padding(12.dp)) {
                                                 Text(
-                                                    text = "🚀 Доступно обновление: ${info.releaseTitle}",
+                                                    text = "Доступно обновление: ${info.releaseTitle}",
                                                     style = MaterialTheme.typography.titleSmall,
                                                     fontWeight = FontWeight.Bold,
                                                     color = MaterialTheme.colorScheme.primary
@@ -736,7 +736,7 @@ fun YaMusicSettingsScreen(
 
                                         AssistChip(
                                             onClick = { isChangelogOpen = true },
-                                            label = { Text("📋 Чейнджлог") },
+                                            label = { Text("Чейнджлог") },
                                             shape = RoundedCornerShape(10.dp)
                                         )
                                     }
@@ -968,7 +968,6 @@ fun FolderPickerScreen(
                                 .padding(vertical = 12.dp, horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("📁", fontSize = 18.sp, modifier = Modifier.padding(end = 12.dp))
                             Text(
                                 text = file.name,
                                 style = MaterialTheme.typography.bodyMedium,
@@ -1040,18 +1039,12 @@ fun ChangelogScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text("📋", fontSize = 22.sp)
-                    Text(
-                        text = "История изменений",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
+                Text(
+                    text = "История изменений",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
 
                 FilledTonalIconButton(
                     onClick = onClose,
@@ -1083,7 +1076,7 @@ fun ChangelogScreen(
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
                                 Text(
-                                    text = "🚀 Заметки к последнему релизу на GitHub",
+                                    text = "Заметки к последнему релизу на GitHub",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
@@ -1273,15 +1266,11 @@ fun YaMusicDownloadsScreen(
                                 .fillMaxWidth(),
                             contentAlignment = Alignment.Center
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("🎵", fontSize = 42.sp)
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Text(
-                                    text = "Нет активных загрузок",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                            Text(
+                                text = "Нет активных загрузок",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     } else {
                         LazyColumn(
