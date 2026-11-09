@@ -897,21 +897,32 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 progressText.visibility = android.view.View.VISIBLE
                                 progressText.text = if (trackDownloadText.isNotEmpty()) trackDownloadText else "Загрузка ${trackDownloadProgress.toInt()}%"
                                 btnDrawable.invalidateSelf()
+                            } else if (trackDownloadState == 2) {
+                                btnDrawable.animState = 2
+                                btnDrawable.downloadProgress = 100f
+                                progressText.visibility = android.view.View.VISIBLE
+                                progressText.text = if (trackDownloadText.isNotEmpty()) trackDownloadText else "Готово!"
+                                btnDrawable.invalidateSelf()
                             }
 
                             val trackListener: (Int, Float, String) -> Unit = { state, progress, text ->
                                 activity.runOnUiThread {
-                                    if (state == 1 && btnDrawable.animState != 1) {
-                                        android.transition.TransitionManager.beginDelayedTransition(downloadBtn, android.transition.AutoTransition().apply { duration = 200 })
-                                        progressText.visibility = android.view.View.VISIBLE
-                                    } else if (state != 1 && btnDrawable.animState == 1) {
+                                    if (state == 1 || (state != 1 && text.isNotEmpty())) {
+                                        if (progressText.visibility != android.view.View.VISIBLE) {
+                                            android.transition.TransitionManager.beginDelayedTransition(downloadBtn, android.transition.AutoTransition().apply { duration = 200 })
+                                            progressText.visibility = android.view.View.VISIBLE
+                                        }
+                                    } else if (state == 0 && text.isEmpty() && progressText.visibility != android.view.View.GONE) {
                                         android.transition.TransitionManager.beginDelayedTransition(downloadBtn, android.transition.AutoTransition().apply { duration = 200 })
                                         progressText.visibility = android.view.View.GONE
                                     }
                                     btnDrawable.animState = state
                                     btnDrawable.downloadProgress = progress
-                                    if (state == 1) {
-                                        progressText.text = if (text.isNotEmpty()) text else "Загрузка ${progress.toInt()}%"
+                                    if (state == 1 || state == 2) {
+                                        val disp = if (text.isNotEmpty()) text else if (state == 2) "Готово!" else "Загрузка ${progress.toInt()}%"
+                                        if (progressText.text != disp) {
+                                            progressText.text = disp
+                                        }
                                     }
                                     btnDrawable.invalidateSelf()
                                 }
@@ -1066,16 +1077,27 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 progressText.visibility = android.view.View.VISIBLE
                                 progressText.text = if (playlistDownloadText.isNotEmpty()) playlistDownloadText else "Загрузка..."
                                 btnDrawable.invalidateSelf()
+                            } else if (playlistDownloadState == 2) {
+                                btnDrawable.animState = 2
+                                btnDrawable.downloadProgress = 100f
+                                progressText.visibility = android.view.View.VISIBLE
+                                progressText.text = if (playlistDownloadText.isNotEmpty()) playlistDownloadText else "Готово!"
+                                btnDrawable.invalidateSelf()
                             }
 
                             val playlistListener: (Int, Float, String) -> Unit = { state, progress, text ->
                                 activity.runOnUiThread {
-                                    if (state != 1 && btnDrawable.animState == 1) {
+                                    if (state == 1 || (state != 1 && text.isNotEmpty())) {
+                                        if (progressText.visibility != android.view.View.VISIBLE) {
+                                            android.transition.TransitionManager.beginDelayedTransition(playlistBtn, android.transition.AutoTransition().apply { duration = 200 })
+                                            progressText.visibility = android.view.View.VISIBLE
+                                        }
+                                    } else if (state == 0 && text.isEmpty() && progressText.visibility != android.view.View.GONE) {
                                         android.transition.TransitionManager.beginDelayedTransition(playlistBtn, android.transition.AutoTransition().apply { duration = 200 })
                                         progressText.visibility = android.view.View.GONE
                                     }
+
                                     if (text.isNotEmpty() && progressText.text != text) {
-                                        android.transition.TransitionManager.beginDelayedTransition(playlistBtn, android.transition.AutoTransition().apply { duration = 200 })
                                         progressText.text = text
                                     }
                                     btnDrawable.animState = state
@@ -1084,7 +1106,16 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                                     if (state == 0 || state == 2) {
                                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                            if (!isPlaylistDownloading) progressText.visibility = android.view.View.GONE
+                                            if (!isPlaylistDownloading) {
+                                                playlistDownloadState = 0
+                                                playlistDownloadProgress = 0f
+                                                playlistDownloadText = ""
+                                                android.transition.TransitionManager.beginDelayedTransition(playlistBtn, android.transition.AutoTransition().apply { duration = 200 })
+                                                progressText.visibility = android.view.View.GONE
+                                                btnDrawable.animState = 0
+                                                btnDrawable.downloadProgress = 0f
+                                                btnDrawable.invalidateSelf()
+                                            }
                                         }, 2000)
                                     }
                                 }
@@ -1866,7 +1897,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                     
                     if (downloadInfoUrlStr == null) {
                         android.util.Log.e("YaMusicLsposed", "Track $trackId ($title) unavailable, skipping")
-                        onError?.invoke() ?: notifyTrackProgress(0, 0f, "")
+                        onError?.invoke()
                         return@thread
                     }
 
@@ -1895,7 +1926,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         val finalDownloadUrl = "https://$host/get-mp3/$sign/$ts$path"
                         
                         downloadAndTagFile(activity, finalDownloadUrl, coverUrl, artist, title, downloadFolder, trackIndex, totalTracks, cancelCheck) { progress ->
-                            notifyTrackProgress(1, progress, "Загрузка ${progress.toInt()}%")
+                            onStateChange(1, progress)
                         }
                         onStateChange(2, 100f)
                         onSuccess()
@@ -1903,7 +1934,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                     } else {
                         android.util.Log.e("YaMusicLsposed", "XML parse error for track $trackId")
                         if (attempts >= maxAttempts) {
-                            onError?.invoke() ?: notifyTrackProgress(0, 0f, "")
+                            onError?.invoke()
                             return@thread
                         }
                     }
@@ -1912,7 +1943,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         android.util.Log.e("YaMusicLsposed", "Download error track $trackId (attempt $attempts): ${e.message}")
                     }
                     if (attempts >= maxAttempts || cancelCheck?.invoke() == true) {
-                        onError?.invoke() ?: notifyTrackProgress(0, 0f, "")
+                        onError?.invoke()
                         return@thread
                     } else {
                         try { Thread.sleep(400) } catch (te: Throwable) {}
@@ -1999,11 +2030,22 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                     return@thread
                 }
                 
+                val seenIds = mutableSetOf<String>()
                 val tracksToDownload = mutableListOf<org.json.JSONObject>()
                 for (i in 0 until trackArray.length()) {
                     val item = trackArray.getJSONObject(i)
                     val track = if (item.has("track")) item.getJSONObject("track") else item
-                    tracksToDownload.add(track)
+                    val isAvailable = track.optBoolean("available", true)
+                    val hasError = track.has("error") && track.optString("error").isNotEmpty()
+                    val tId = track.optString("id", "")
+                    if (isAvailable && !hasError && tId.isNotEmpty() && track.has("title") && seenIds.add(tId)) {
+                        tracksToDownload.add(track)
+                    }
+                }
+
+                if (tracksToDownload.isEmpty()) {
+                    notifyPlaylistProgress(0, 0f, if (isAlbum) "Нет доступных треков в альбоме!" else "Нет доступных треков в плейлисте!")
+                    return@thread
                 }
 
                 var index = 0
@@ -2014,6 +2056,8 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 val lock = Object()
                 
                 initNotification(activity)
+                notifyPlaylistProgress(1, 0f, "0/$total")
+                updateNotification(if (isAlbum) "Скачивание альбома" else "Скачивание плейлиста", "0/$total", 100, 0, false)
 
                 fun downloadNext() {
                     synchronized(lock) {
@@ -2061,12 +2105,6 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 }
                             }
 
-                            if (tId.isEmpty() || !track.has("title")) {
-                                // Deleted or unavailable track — skip
-                                completedCount++
-                                continue
-                            }
-                            
                             activeCount++
                             val activeDownload = ActiveDownload(tId, tTitle, tArtist)
                             DownloadState.activeDownloads.add(activeDownload)
