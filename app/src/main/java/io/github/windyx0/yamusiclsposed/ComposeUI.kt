@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -118,9 +119,13 @@ fun openUrl(context: Context, url: String) {
     }
 }
 
-fun fetchLatestRelease(currentVersionCode: Int = 2, currentVersionName: String = "1.1"): UpdateState {
+fun fetchLatestRelease(
+    currentVersionCode: Int = 3,
+    currentVersionName: String = "1.2",
+    channel: String = "release"
+): UpdateState {
     return try {
-        val url = URL("https://api.github.com/repos/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed/releases/latest")
+        val url = URL("https://api.github.com/repos/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed/releases")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = 7000
             readTimeout = 7000
@@ -129,7 +134,38 @@ fun fetchLatestRelease(currentVersionCode: Int = 2, currentVersionName: String =
         }
         if (conn.responseCode in 200..299) {
             val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-            val json = JSONObject(responseText)
+            val releasesArray = JSONArray(responseText)
+            if (releasesArray.length() == 0) {
+                return UpdateState.UpToDate(currentVersionName)
+            }
+
+            var chosenRelease: JSONObject? = null
+            for (i in 0 until releasesArray.length()) {
+                val rel = releasesArray.getJSONObject(i)
+                if (rel.optBoolean("draft", false)) continue
+
+                val isPre = rel.optBoolean("prerelease", false)
+                val tag = rel.optString("tag_name", "").lowercase()
+                val rName = rel.optString("name", "").lowercase()
+                val isDev = tag.contains("dev") || rName.contains("dev")
+
+                val matchesChannel = when (channel) {
+                    "dev" -> true
+                    "prerelease" -> !isDev
+                    else -> !isPre && !isDev
+                }
+
+                if (matchesChannel) {
+                    chosenRelease = rel
+                    break
+                }
+            }
+
+            if (chosenRelease == null) {
+                return UpdateState.UpToDate(currentVersionName)
+            }
+
+            val json = chosenRelease
             val tagName = json.optString("tag_name", "")
             val releaseName = json.optString("name", tagName)
             val body = json.optString("body", "")
@@ -196,9 +232,22 @@ data class ChangelogItem(
 
 val changelogHistory = listOf(
     ChangelogItem(
-        version = "v1.1",
+        version = "v1.2",
         date = "Ноябрь 2026",
         isCurrent = true,
+        points = listOf(
+            "Исправление скачивания 30 секунд: прямая генерация криптографической подписи HMAC-SHA256 для запросов get-file-info и потоковая расшифровка AES-128-CTR.",
+            "Скачивание полных треков без подписки: модуль автоматически получает полный поток воспроизведения и расшифровывает аудио (MP3 и M4A).",
+            "Выбор каналов обновления: возможность переключения между Релиз, Пре-релиз и Дев-релиз в настройках.",
+            "Поддержка AAC/M4A контейнеров: автоматическое определение формата аудиопотока и корректное сохранение.",
+            "Системное сканирование MediaStore: моментальное отображение сохранённых треков во всех плеерах устройства.",
+            "Улучшенная стабильность: оптимизирована параллельная загрузка и надежное кэширование метаданных."
+        )
+    ),
+    ChangelogItem(
+        version = "v1.1",
+        date = "Ноябрь 2026",
+        isCurrent = false,
         points = listOf(
             "Автоматический перехват токена: модуль сам получает OAuth-токен через системный AccountManager и сетевые перехватчики OkHttp/Cronet.",
             "Новый интерфейс Material Design 3: современный дизайн настроек с динамическими цветами Material You на Android 12+, MD3 контейнерами и скруглениями 28dp.",
@@ -237,6 +286,7 @@ fun YaMusicSettingsScreen(
         var folderType by remember { mutableStateOf(config.folderType) }
         var customFolder by remember { mutableStateOf(config.customFolder) }
         var manualToken by remember { mutableStateOf(config.manualToken) }
+        var updateChannel by remember { mutableStateOf(config.updateChannel) }
         var autoDetectedToken by remember { mutableStateOf(MainHook.cachedToken ?: findToken(activity)) }
 
         var isFolderPickerOpen by remember { mutableStateOf(false) }
@@ -248,7 +298,7 @@ fun YaMusicSettingsScreen(
             if (updateState is UpdateState.Idle) {
                 updateState = UpdateState.Checking
                 withContext(Dispatchers.IO) {
-                    updateState = fetchLatestRelease(2, "1.1")
+                    updateState = fetchLatestRelease(3, "1.2", updateChannel)
                 }
             }
         }
@@ -322,7 +372,7 @@ fun YaMusicSettingsScreen(
                                     color = MaterialTheme.colorScheme.primaryContainer
                                 ) {
                                     Text(
-                                        text = "v1.1",
+                                        text = "v1.2",
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -631,7 +681,7 @@ fun YaMusicSettingsScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = "Текущая версия: v1.1 (код 2)",
+                                                text = "Текущая версия: v1.2 (код 3)",
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 fontWeight = FontWeight.Medium,
                                                 color = MaterialTheme.colorScheme.onSurface
@@ -663,6 +713,62 @@ fun YaMusicSettingsScreen(
                                                 color = MaterialTheme.colorScheme.primary
                                             )
                                         }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "Канал обновлений",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        FilterChip(
+                                            selected = updateChannel == "release",
+                                            onClick = {
+                                                updateChannel = "release"
+                                                coroutineScope.launch {
+                                                    updateState = UpdateState.Checking
+                                                    withContext(Dispatchers.IO) {
+                                                        updateState = fetchLatestRelease(3, "1.2", "release")
+                                                    }
+                                                }
+                                            },
+                                            label = { Text("Релиз") },
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        FilterChip(
+                                            selected = updateChannel == "prerelease",
+                                            onClick = {
+                                                updateChannel = "prerelease"
+                                                coroutineScope.launch {
+                                                    updateState = UpdateState.Checking
+                                                    withContext(Dispatchers.IO) {
+                                                        updateState = fetchLatestRelease(3, "1.2", "prerelease")
+                                                    }
+                                                }
+                                            },
+                                            label = { Text("Пре-релиз") },
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        FilterChip(
+                                            selected = updateChannel == "dev",
+                                            onClick = {
+                                                updateChannel = "dev"
+                                                coroutineScope.launch {
+                                                    updateState = UpdateState.Checking
+                                                    withContext(Dispatchers.IO) {
+                                                        updateState = fetchLatestRelease(3, "1.2", "dev")
+                                                    }
+                                                }
+                                            },
+                                            label = { Text("Дев-релиз") },
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
                                     }
 
                                     // If update is available:
@@ -723,7 +829,7 @@ fun YaMusicSettingsScreen(
                                                 coroutineScope.launch {
                                                     updateState = UpdateState.Checking
                                                     withContext(Dispatchers.IO) {
-                                                        updateState = fetchLatestRelease(2, "1.1")
+                                                        updateState = fetchLatestRelease(3, "1.2", updateChannel)
                                                     }
                                                 }
                                             },
@@ -747,7 +853,7 @@ fun YaMusicSettingsScreen(
                             item {
                                 Md3SectionCard(title = "О модуле (YaMusicLsposed)") {
                                     Text(
-                                        text = "Версия 1.1 • Разработчик: Windyx0",
+                                        text = "Версия 1.2 • Разработчик: Windyx0",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -814,7 +920,8 @@ fun YaMusicSettingsScreen(
                                             coverSize = coverSize,
                                             folderType = folderType,
                                             customFolder = customFolder,
-                                            manualToken = manualToken
+                                            manualToken = manualToken,
+                                            updateChannel = updateChannel
                                         )
                                     )
                                 },
