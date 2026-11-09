@@ -869,59 +869,75 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         format.getLong(MediaFormat.KEY_DURATION)
                     } else 0L
 
-                    decoder = MediaCodec.createDecoderByType(mime)
-                    decoder.configure(format, null, null, 0)
-                    decoder.start()
+                    val dec = try {
+                        MediaCodec.createByCodecName("c2.android.aac.decoder")
+                    } catch (e: Throwable) {
+                        MediaCodec.createDecoderByType(mime)
+                    }
+                    decoder = dec
+                    android.util.Log.i("YaMusicLsposed", "Using audio decoder: ${dec.name}")
+                    dec.configure(format, null, null, 0)
+                    dec.start()
 
                     var actualSampleRate = sampleRate
                     var actualChannels = channelCount
 
                     val bufferInfo = MediaCodec.BufferInfo()
-                    val timeoutUs = 10000L
                     var inputEOS = false
                     var outputEOS = false
                     val mp3Buffer = ByteArray(65536)
+                    var pcmShorts: ShortArray? = null
 
-                    val mp3Out = FileOutputStream(outputFile)
+                    val mp3Out = java.io.BufferedOutputStream(FileOutputStream(outputFile), 65536)
+                    val tStart = System.currentTimeMillis()
+                    var tEncodeTotal = 0L
+                    var lastProgressTime = 0L
+                    var lastReportedProgress = -1
                     try {
                         while (!outputEOS) {
                             if (cancelCheck?.invoke() == true) {
                                 throw RuntimeException("Cancelled")
                             }
 
-                            if (!inputEOS) {
-                                val inIndex = decoder.dequeueInputBuffer(timeoutUs)
-                                if (inIndex >= 0) {
-                                    val inBuffer = decoder.getInputBuffer(inIndex)
-                                    if (inBuffer != null) {
-                                        inBuffer.clear()
-                                        val sampleSize = extractor.readSampleData(inBuffer, 0)
-                                        if (sampleSize < 0) {
-                                            decoder.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                            inputEOS = true
-                                        } else {
-                                            val pts = extractor.sampleTime
-                                            decoder.queueInputBuffer(inIndex, 0, sampleSize, pts, 0)
-                                            extractor.advance()
-                                        }
-                                    }
+                            var fedAny = false
+                            while (!inputEOS) {
+                                val inIndex = dec.dequeueInputBuffer(0L)
+                                if (inIndex < 0) break
+                                val inBuffer = dec.getInputBuffer(inIndex) ?: break
+                                inBuffer.clear()
+                                val sampleSize = extractor.readSampleData(inBuffer, 0)
+                                if (sampleSize < 0) {
+                                    dec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                    inputEOS = true
+                                } else {
+                                    val pts = extractor.sampleTime
+                                    dec.queueInputBuffer(inIndex, 0, sampleSize, pts, 0)
+                                    extractor.advance()
                                 }
+                                fedAny = true
                             }
 
-                            var outIndex = decoder.dequeueOutputBuffer(bufferInfo, timeoutUs)
-                            while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                            var drainedAny = false
+                            while (true) {
+                                val timeoutUs = if (!fedAny && !drainedAny) 2000L else 0L
+                                val outIndex = dec.dequeueOutputBuffer(bufferInfo, timeoutUs)
+                                if (outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                                    break
+                                }
                                 if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                                    val newFormat = decoder.outputFormat
+                                    val newFormat = dec.outputFormat
                                     actualSampleRate = if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
                                         newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                                     } else actualSampleRate
                                     actualChannels = if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                                         newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                                     } else actualChannels
-                                    outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
+                                    drainedAny = true
                                     continue
                                 }
+                                if (outIndex < 0) break
 
+                                drainedAny = true
                                 if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                                     outputEOS = true
                                 }
@@ -932,12 +948,12 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                         .setOutSampleRate(actualSampleRate)
                                         .setOutChannels(actualChannels)
                                         .setOutBitrate(targetBitrateKbps)
-                                        .setQuality(2)
+                                        .setQuality(7)
                                         .setMode(if (actualChannels == 1) LameBuilder.Mode.MONO else LameBuilder.Mode.STEREO)
                                     lame = builder.build()
                                 }
 
-                                val outBuffer = decoder.getOutputBuffer(outIndex)
+                                val outBuffer = dec.getOutputBuffer(outIndex)
                                 if (outBuffer != null && bufferInfo.size > 0) {
                                     outBuffer.position(bufferInfo.offset)
                                     outBuffer.limit(bufferInfo.offset + bufferInfo.size)
@@ -946,17 +962,21 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     val shortBuffer = outBuffer.asShortBuffer()
                                     val numShorts = shortBuffer.remaining()
                                     if (numShorts > 0) {
-                                        val pcmShorts = ShortArray(numShorts)
-                                        shortBuffer.get(pcmShorts)
+                                        if (pcmShorts == null || pcmShorts!!.size < numShorts) {
+                                            pcmShorts = ShortArray(numShorts)
+                                        }
+                                        shortBuffer.get(pcmShorts, 0, numShorts)
 
                                         val samplesPerChannel = numShorts / actualChannels
                                         if (samplesPerChannel > 0) {
                                             val l = lame!!
+                                            val tEnc0 = System.currentTimeMillis()
                                             val encoded = if (actualChannels == 1) {
                                                 l.encode(pcmShorts, pcmShorts, numShorts, mp3Buffer)
                                             } else {
                                                 l.encodeBufferInterLeaved(pcmShorts, samplesPerChannel, mp3Buffer)
                                             }
+                                            tEncodeTotal += (System.currentTimeMillis() - tEnc0)
                                             if (encoded > 0) {
                                                 mp3Out.write(mp3Buffer, 0, encoded)
                                             }
@@ -965,13 +985,18 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                                     if (durationUs > 0L) {
                                         val progress = (bufferInfo.presentationTimeUs.toFloat() / durationUs.toFloat()) * 100f
-                                        onProgress?.invoke(progress.coerceIn(0f, 99f))
+                                        val pInt = progress.toInt()
+                                        val now = System.currentTimeMillis()
+                                        if (pInt != lastReportedProgress && now - lastProgressTime >= 150) {
+                                            lastProgressTime = now
+                                            lastReportedProgress = pInt
+                                            onProgress?.invoke(progress.coerceIn(0f, 99f))
+                                        }
                                     }
                                 }
 
-                                decoder.releaseOutputBuffer(outIndex, false)
+                                dec.releaseOutputBuffer(outIndex, false)
                                 if (outputEOS) break
-                                outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
                             }
                         }
 
@@ -986,6 +1011,8 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         mp3Out.close()
                     }
 
+                    val totalTime = System.currentTimeMillis() - tStart
+                    android.util.Log.i("YaMusicLsposed", "convertM4aToMp3 finished: total=${totalTime}ms, LAME encoding=${tEncodeTotal}ms, decoding/loop=${totalTime - tEncodeTotal}ms")
                     return outputFile.exists() && outputFile.length() > 0
                 } catch (t: Throwable) {
                     android.util.Log.e("YaMusicLsposed", "convertM4aToMp3 error: ${t.stackTraceToString()}")
@@ -2196,6 +2223,20 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         val finalOutFile = File(outDir, fileName)
         val tempRawFile = File(activity.cacheDir, "raw_${System.currentTimeMillis()}_$cleanTitle.tmp")
         
+        var coverBytes: ByteArray? = null
+        val coverThread = if (!coverUrl.isNullOrEmpty()) {
+            thread {
+                try {
+                    val coverConn = URL(coverUrl).openConnection() as HttpURLConnection
+                    coverConn.connectTimeout = 7000
+                    coverConn.readTimeout = 7000
+                    coverBytes = coverConn.inputStream.readBytes()
+                } catch (e: Throwable) {
+                    android.util.Log.e("YaMusicLsposed", "Failed to download cover - ${e.message}")
+                }
+            }
+        } else null
+        
         try {
             val mp3Conn = URL(mp3Url).openConnection() as HttpURLConnection
             mp3Conn.connectTimeout = 15000
@@ -2281,6 +2322,8 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 pcmOrMp3File = tempRawFile
             }
 
+            val tTag0 = System.currentTimeMillis()
+            coverThread?.join(3000)
             var tagged = false
             try {
                 val mp3file = Mp3File(pcmOrMp3File.absolutePath)
@@ -2288,25 +2331,13 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 id3v2Tag.artist = artist
                 id3v2Tag.title = title
                 
-                if (coverUrl != null) {
-                    try {
-                        val coverConn = URL(coverUrl).openConnection() as HttpURLConnection
-                        coverConn.connectTimeout = 10000
-                        coverConn.readTimeout = 10000
-                        val coverBytes = coverConn.inputStream.readBytes()
-                        id3v2Tag.setAlbumImage(coverBytes, "image/jpeg")
-                    } catch (e: Throwable) {
-                        android.util.Log.e("YaMusicLsposed", "Failed to download cover - ${e.message}")
-                    }
+                if (coverBytes != null && coverBytes!!.isNotEmpty()) {
+                    id3v2Tag.setAlbumImage(coverBytes, "image/jpeg")
                 }
                 
                 mp3file.id3v2Tag = id3v2Tag
-                val taggedTempFile = File(activity.cacheDir, "tagged_${System.currentTimeMillis()}_$cleanTitle.mp3")
-                mp3file.save(taggedTempFile.absolutePath)
-                
-                taggedTempFile.copyTo(finalOutFile, overwrite = true)
+                mp3file.save(finalOutFile.absolutePath)
                 pcmOrMp3File.delete()
-                taggedTempFile.delete()
                 tagged = true
             } catch (t: Throwable) {
                 android.util.Log.e("YaMusicLsposed", "Mp3 tagging error: ${t.message}, fallback to raw copy")
@@ -2315,6 +2346,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 pcmOrMp3File.copyTo(finalOutFile, overwrite = true)
                 pcmOrMp3File.delete()
             }
+            android.util.Log.i("YaMusicLsposed", "Tagging and final write took ${System.currentTimeMillis() - tTag0}ms")
             
             val baseTime = System.currentTimeMillis()
             val timeOffset = (totalTracks - trackIndex) * 1000L
