@@ -52,11 +52,17 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"
     }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
 }
 
 dependencies {
     compileOnly("de.robv.android.xposed:api:82")
     implementation("com.mpatric:mp3agic:0.9.1")
+    implementation("com.github.naman14:TAndroidLame:1.1")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.01.00")
     implementation(composeBom)
