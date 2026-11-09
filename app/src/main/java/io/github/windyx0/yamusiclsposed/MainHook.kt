@@ -154,11 +154,17 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
             return data
         }
 
-        fun parseAndSaveFileInfo(bodyString: String, context: Context?) {
+        fun parseAndSaveFileInfo(bodyString: String, context: Context?, fallbackTrackId: String? = null) {
             try {
                 val json = org.json.JSONObject(bodyString)
                 val dlInfo = json.optJSONObject("result")?.optJSONObject("downloadInfo") ?: return
-                val tId = dlInfo.optString("trackId", "")
+                var tId = dlInfo.optString("trackId", "")
+                if (tId.isEmpty()) {
+                    tId = dlInfo.optString("realId", "")
+                }
+                if (tId.isEmpty() && !fallbackTrackId.isNullOrEmpty()) {
+                    tId = fallbackTrackId
+                }
                 val key = dlInfo.optString("key", "")
                 val codec = dlInfo.optString("codec", "mp3")
                 val streamUrl = dlInfo.optString("url", "")
@@ -322,51 +328,65 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
 
         fun fetchFileInfoDirectly(trackId: String, token: String, context: Context?): TrackStreamInfo? {
-            try {
-                val cleanId = trackId.substringBefore(":")
-                val ts = (System.currentTimeMillis() / 1000).toString()
-                val codecsJoined = "mp3he-aacaacflache-aac-mp4aac-mp4flac-mp4"
-                val codecsParam = "mp3,he-aac,aac,flac,he-aac-mp4,aac-mp4,flac-mp4"
-                val quality = "auto"
-                val signData = "${ts}${cleanId}${quality}${codecsJoined}encraw"
-                
-                val keyBytes = "p93jhgh689SBReK6ghtw62".toByteArray(Charsets.UTF_8)
-                val mac = Mac.getInstance("HmacSHA256")
-                mac.init(SecretKeySpec(keyBytes, "HmacSHA256"))
-                val sigBytes = mac.doFinal(signData.toByteArray(Charsets.UTF_8))
-                val sign = Base64.encodeToString(sigBytes, Base64.NO_WRAP or Base64.NO_PADDING).trimEnd('=')
-                
-                val encodedSign = java.net.URLEncoder.encode(sign, "UTF-8")
-                val encodedCodecs = java.net.URLEncoder.encode(codecsParam, "UTF-8")
-                
-                val urlStr = "https://api.music.yandex.net/get-file-info?trackId=$cleanId&codecs=$encodedCodecs&transports=encraw&quality=$quality&ts=$ts&sign=$encodedSign"
-                val conn = URL(urlStr).openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000
-                conn.readTimeout = 15000
-                if (token.isNotEmpty()) {
-                    conn.setRequestProperty("Authorization", "OAuth $token")
+            val cleanId = trackId.substringBefore(":")
+            var attempts = 0
+            while (attempts < 2) {
+                attempts++
+                try {
+                    val ts = (System.currentTimeMillis() / 1000).toString()
+                    val codecsJoined = "mp3he-aacaacflache-aac-mp4aac-mp4flac-mp4"
+                    val codecsParam = "mp3,he-aac,aac,flac,he-aac-mp4,aac-mp4,flac-mp4"
+                    val quality = "auto"
+                    val signData = "${ts}${cleanId}${quality}${codecsJoined}encraw"
+                    
+                    val keyBytes = "p93jhgh689SBReK6ghtw62".toByteArray(Charsets.UTF_8)
+                    val mac = Mac.getInstance("HmacSHA256")
+                    mac.init(SecretKeySpec(keyBytes, "HmacSHA256"))
+                    val sigBytes = mac.doFinal(signData.toByteArray(Charsets.UTF_8))
+                    val sign = Base64.encodeToString(sigBytes, Base64.NO_WRAP or Base64.NO_PADDING).trimEnd('=')
+                    
+                    val encodedSign = java.net.URLEncoder.encode(sign, "UTF-8")
+                    val encodedCodecs = java.net.URLEncoder.encode(codecsParam, "UTF-8")
+                    
+                    val urlStr = "https://api.music.yandex.net/get-file-info?trackId=$cleanId&codecs=$encodedCodecs&transports=encraw&quality=$quality&ts=$ts&sign=$encodedSign"
+                    val conn = URL(urlStr).openConnection() as HttpURLConnection
+                    conn.connectTimeout = 12000
+                    conn.readTimeout = 12000
+                    if (token.isNotEmpty()) {
+                        conn.setRequestProperty("Authorization", "OAuth $token")
+                    }
+                    conn.setRequestProperty("X-Yandex-Music-Client", "YandexMusicAndroid/24026531")
+                    conn.setRequestProperty("Accept", "application/json")
+                    conn.setRequestProperty("Accept-Encoding", "gzip")
+                    
+                    val responseCode = conn.responseCode
+                    if (responseCode == 429 && attempts < 2) {
+                        Thread.sleep(800)
+                        continue
+                    }
+                    val stream = if (responseCode in 200..299) conn.inputStream else conn.errorStream ?: return null
+                    val inputStream = if ("gzip".equals(conn.contentEncoding, ignoreCase = true)) {
+                        GZIPInputStream(stream)
+                    } else {
+                        stream
+                    }
+                    val bodyString = inputStream.bufferedReader().use { it.readText() }
+                    parseAndSaveFileInfo(bodyString, context, cleanId)
+                    val res = capturedStreamInfos[cleanId]
+                    if (res != null && (res.url.contains("preview.mp3") || res.url.contains("/preview"))) {
+                        capturedStreamInfos.remove(cleanId)
+                        return null
+                    }
+                    return res
+                } catch (t: Throwable) {
+                    if (attempts >= 2) {
+                        android.util.Log.e("YaMusicLsposed", "fetchFileInfoDirectly error for $trackId: ${t.message}")
+                    } else {
+                        try { Thread.sleep(500) } catch (e: Throwable) {}
+                    }
                 }
-                conn.setRequestProperty("X-Yandex-Music-Client", "YandexMusicAndroid/24026531")
-                conn.setRequestProperty("Accept", "application/json")
-                conn.setRequestProperty("Accept-Encoding", "gzip")
-                
-                val inputStream = if ("gzip".equals(conn.contentEncoding, ignoreCase = true)) {
-                    GZIPInputStream(conn.inputStream)
-                } else {
-                    conn.inputStream
-                }
-                val bodyString = inputStream.bufferedReader().use { it.readText() }
-                parseAndSaveFileInfo(bodyString, context)
-                val res = capturedStreamInfos[cleanId]
-                if (res != null && (res.url.contains("preview.mp3") || res.url.contains("/preview"))) {
-                    capturedStreamInfos.remove(cleanId)
-                    return null
-                }
-                return res
-            } catch (t: Throwable) {
-                android.util.Log.e("YaMusicLsposed", "fetchFileInfoDirectly error for $trackId: ${t.message}")
-                return null
             }
+            return null
         }
 
         fun isValidToken(str: String?): Boolean {
@@ -1239,7 +1259,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         } catch (e: Throwable) {}
 
                         val rootView = activity.window.decorView.findViewById<ViewGroup>(android.R.id.content)
-                        if (rootView.findViewWithTag<ImageButton>("YaMusicDownloadButton") != null) return
+                        if (rootView.findViewWithTag<android.view.View>("YaMusicDownloadButton") != null) return
                         
                     
                         val density = activity.resources.displayMetrics.density
@@ -1372,11 +1392,12 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 
                                 startDownloadProcess(activity) { state, progress ->
                                     activity.runOnUiThread {
+                                        if (activity.isFinishing || (android.os.Build.VERSION.SDK_INT >= 17 && activity.isDestroyed)) return@runOnUiThread
                                         if (state == 1 && btnDrawable.animState != 1) {
-                                            android.transition.TransitionManager.beginDelayedTransition(rootView, android.transition.AutoTransition().apply { duration = 200 })
+                                            android.transition.TransitionManager.beginDelayedTransition(this@apply, android.transition.AutoTransition().apply { duration = 200 })
                                             progressText.visibility = android.view.View.VISIBLE
                                         } else if (state != 1 && btnDrawable.animState == 1) {
-                                            android.transition.TransitionManager.beginDelayedTransition(rootView, android.transition.AutoTransition().apply { duration = 200 })
+                                            android.transition.TransitionManager.beginDelayedTransition(this@apply, android.transition.AutoTransition().apply { duration = 200 })
                                             progressText.visibility = android.view.View.GONE
                                         }
                                         
@@ -1568,7 +1589,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                                 isPlaylistDownloading = true
                                 cancelPlaylistDownload = false
-                                android.transition.TransitionManager.beginDelayedTransition(rootView, android.transition.AutoTransition().apply { duration = 200 })
+                                android.transition.TransitionManager.beginDelayedTransition(this@apply, android.transition.AutoTransition().apply { duration = 200 })
                                 progressText.visibility = android.view.View.VISIBLE
                                 progressText.text = "Запуск..."
                                 btnDrawable.animState = 1
@@ -1576,12 +1597,13 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                                 val updateProgress: (Int, Float, String) -> Unit = { state, progress, text ->
                                     activity.runOnUiThread {
+                                        if (activity.isFinishing || (android.os.Build.VERSION.SDK_INT >= 17 && activity.isDestroyed)) return@runOnUiThread
+
                                         if (state != 1 && btnDrawable.animState == 1) {
-                                            android.transition.TransitionManager.beginDelayedTransition(rootView, android.transition.AutoTransition().apply { duration = 200 })
+                                            android.transition.TransitionManager.beginDelayedTransition(this@apply, android.transition.AutoTransition().apply { duration = 200 })
                                             progressText.visibility = android.view.View.GONE
                                         }
                                         if (text.isNotEmpty() && progressText.text != text) {
-                                            android.transition.TransitionManager.beginDelayedTransition(rootView, android.transition.AutoTransition().apply { duration = 200 })
                                             progressText.text = text
                                         }
                                         btnDrawable.animState = state
@@ -1591,7 +1613,10 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                         if (state == 0 || state == 2) {
                                             isPlaylistDownloading = false
                                             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                                if (!isPlaylistDownloading) progressText.visibility = android.view.View.GONE
+                                                if (!isPlaylistDownloading) {
+                                                    android.transition.TransitionManager.beginDelayedTransition(this@apply, android.transition.AutoTransition().apply { duration = 200 })
+                                                    progressText.visibility = android.view.View.GONE
+                                                }
                                             }, 2000)
                                         }
                                     }
@@ -2084,44 +2109,8 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                     android.util.Log.e("YaMusicLsposed", "Failed to fetch track info: ${e.message}")
                 }
 
-                // 2. Check download-info first for 320 kbps (if Plus user)
-                var directDownloadUrl: String? = null
-                if (targetQuality == 320) {
-                    try {
-                        val infoUrl = URL("https://api.music.yandex.net/tracks/$resolvedMediaId/download-info")
-                        val infoConn = infoUrl.openConnection() as HttpURLConnection
-                        if (token.isNotEmpty()) {
-                            infoConn.setRequestProperty("Authorization", "OAuth $token")
-                        }
-                        val infoResponse = infoConn.inputStream.bufferedReader().use(BufferedReader::readText)
-                        val isPreview = infoResponse.contains("\"preview\":true") || !infoResponse.contains("\"preview\":false")
-                        if (!isPreview) {
-                            val pattern320 = Pattern.compile("\"bitrateInKbps\":320.*?\"downloadInfoUrl\":\"(https?://.*?)\"")
-                            val matcher320 = pattern320.matcher(infoResponse)
-                            if (matcher320.find()) {
-                                val dlInfoUrlStr = matcher320.group(1)
-                                val dlInfoConn = URL(dlInfoUrlStr).openConnection() as HttpURLConnection
-                                if (token.isNotEmpty()) dlInfoConn.setRequestProperty("Authorization", "OAuth $token")
-                                val dlInfoResponse = dlInfoConn.inputStream.bufferedReader().use(BufferedReader::readText)
-                                val hostMatcher = Pattern.compile("<host>(.*?)</host>").matcher(dlInfoResponse)
-                                val pathMatcher = Pattern.compile("<path>(.*?)</path>").matcher(dlInfoResponse)
-                                val tsMatcher = Pattern.compile("<ts>(.*?)</ts>").matcher(dlInfoResponse)
-                                val sMatcher = Pattern.compile("<s>(.*?)</s>").matcher(dlInfoResponse)
-                                if (hostMatcher.find() && pathMatcher.find() && tsMatcher.find() && sMatcher.find()) {
-                                    val host = hostMatcher.group(1)
-                                    val path = pathMatcher.group(1)
-                                    val ts = tsMatcher.group(1)
-                                    val s = sMatcher.group(1)
-                                    val signStr = "XGRlBW9FXlekgbPrRHuSiA${path.substring(1)}${s}"
-                                    val md = MessageDigest.getInstance("MD5")
-                                    val digest = md.digest(signStr.toByteArray())
-                                    val sign = digest.joinToString("") { "%02x".format(it) }
-                                    directDownloadUrl = "https://$host/get-mp3/$sign/$ts$path"
-                                }
-                            }
-                        }
-                    } catch (e: Throwable) {}
-                }
+                // 2. Check download-info first (if Plus user)
+                var directDownloadUrl = fetchDirectDownloadUrl(resolvedMediaId, token, targetQuality)
 
                 if (directDownloadUrl != null && !directDownloadUrl.contains("preview.mp3") && !directDownloadUrl.contains("/preview")) {
                     initNotification(activity)
@@ -2367,6 +2356,89 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    private fun fetchDirectDownloadUrl(trackId: String, token: String, targetQuality: Int): String? {
+        try {
+            val cleanId = trackId.substringBefore(":")
+            val infoUrl = URL("https://api.music.yandex.net/tracks/$cleanId/download-info")
+            val infoConn = infoUrl.openConnection() as HttpURLConnection
+            infoConn.connectTimeout = 10000
+            infoConn.readTimeout = 10000
+            if (token.isNotEmpty()) {
+                infoConn.setRequestProperty("Authorization", "OAuth $token")
+            }
+            val responseCode = infoConn.responseCode
+            if (responseCode != 200) {
+                android.util.Log.w("YaMusicLsposed", "download-info returned HTTP $responseCode for $cleanId")
+                return null
+            }
+            val infoResponse = infoConn.inputStream.bufferedReader().use(BufferedReader::readText)
+            val json = org.json.JSONObject(infoResponse)
+            val items = json.optJSONArray("result") ?: return null
+            if (items.length() == 0) return null
+
+            var bestItem: org.json.JSONObject? = null
+            var bestScore = -1
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                val isPreview = item.optBoolean("preview", false)
+                if (isPreview) continue
+
+                val bitrate = item.optInt("bitrateInKbps", 0)
+                val codec = item.optString("codec", "").lowercase()
+                
+                var score = 0
+                if (bitrate == targetQuality) score += 100
+                else if (bitrate > 0) score += Math.max(0, 50 - Math.abs(bitrate - targetQuality) / 10)
+
+                if (codec == "mp3") score += 20
+                
+                if (score > bestScore) {
+                    bestScore = score
+                    bestItem = item
+                }
+            }
+
+            val chosen = bestItem ?: return null
+            val dlInfoUrlStr = chosen.optString("downloadInfoUrl", "")
+            if (dlInfoUrlStr.isEmpty()) return null
+
+            if (chosen.optBoolean("direct", false) && !dlInfoUrlStr.contains("preview.mp3") && !dlInfoUrlStr.contains("/preview")) {
+                android.util.Log.i("YaMusicLsposed", "Resolved direct download url for $cleanId (${chosen.optInt("bitrateInKbps")} kbps)")
+                return dlInfoUrlStr
+            }
+
+            val dlInfoConn = URL(dlInfoUrlStr).openConnection() as HttpURLConnection
+            dlInfoConn.connectTimeout = 10000
+            dlInfoConn.readTimeout = 10000
+            if (token.isNotEmpty()) dlInfoConn.setRequestProperty("Authorization", "OAuth $token")
+            val dlInfoResponse = dlInfoConn.inputStream.bufferedReader().use(BufferedReader::readText)
+
+            val hostMatcher = Pattern.compile("<host>(.*?)</host>").matcher(dlInfoResponse)
+            val pathMatcher = Pattern.compile("<path>(.*?)</path>").matcher(dlInfoResponse)
+            val tsMatcher = Pattern.compile("<ts>(.*?)</ts>").matcher(dlInfoResponse)
+            val sMatcher = Pattern.compile("<s>(.*?)</s>").matcher(dlInfoResponse)
+            if (hostMatcher.find() && pathMatcher.find() && tsMatcher.find() && sMatcher.find()) {
+                val host = hostMatcher.group(1)
+                val rawPath = pathMatcher.group(1)
+                val ts = tsMatcher.group(1)
+                val s = sMatcher.group(1)
+                val cleanPath = if (rawPath.startsWith("/")) rawPath.substring(1) else rawPath
+                val signStr = "XGRlBW9FXlekgbPrRHuSiA${cleanPath}${s}"
+                val md = MessageDigest.getInstance("MD5")
+                val digest = md.digest(signStr.toByteArray(Charsets.UTF_8))
+                val sign = digest.joinToString("") { "%02x".format(it) }
+                val url = "https://$host/get-mp3/$sign/$ts/$cleanPath"
+                if (!url.contains("preview.mp3") && !url.contains("/preview")) {
+                    android.util.Log.i("YaMusicLsposed", "Resolved direct download url for $cleanId (${chosen.optInt("bitrateInKbps")} kbps)")
+                    return url
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("YaMusicLsposed", "fetchDirectDownloadUrl error for $trackId: ${t.message}")
+        }
+        return null
+    }
+
     private fun downloadTrackById(
         activity: Activity,
         trackId: String,
@@ -2387,48 +2459,8 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
             try {
                 if (cancelCheck?.invoke() == true) { onError?.invoke(); return@thread }
 
-                // 1. Try download-info for 320kbps full track (if user has Plus)
-                var directDownloadUrl: String? = null
-                if (targetQuality == 320) {
-                    try {
-                        val infoUrl = URL("https://api.music.yandex.net/tracks/$trackId/download-info")
-                        val infoConn = infoUrl.openConnection() as HttpURLConnection
-                        infoConn.connectTimeout = 10000
-                        infoConn.readTimeout = 10000
-                        if (token.isNotEmpty()) {
-                            infoConn.setRequestProperty("Authorization", "OAuth $token")
-                        }
-                        val infoResponse = infoConn.inputStream.bufferedReader().use(BufferedReader::readText)
-                        val isPreview = infoResponse.contains("\"preview\":true") || !infoResponse.contains("\"preview\":false")
-                        if (!isPreview) {
-                            val pattern320 = Pattern.compile("\"bitrateInKbps\":320.*?\"downloadInfoUrl\":\"(https?://.*?)\"")
-                            val matcher320 = pattern320.matcher(infoResponse)
-                            if (matcher320.find()) {
-                                val dlInfoUrlStr = matcher320.group(1)
-                                val dlInfoConn = URL(dlInfoUrlStr).openConnection() as HttpURLConnection
-                                dlInfoConn.connectTimeout = 10000
-                                dlInfoConn.readTimeout = 10000
-                                if (token.isNotEmpty()) dlInfoConn.setRequestProperty("Authorization", "OAuth $token")
-                                val dlInfoResponse = dlInfoConn.inputStream.bufferedReader().use(BufferedReader::readText)
-                                val hostMatcher = Pattern.compile("<host>(.*?)</host>").matcher(dlInfoResponse)
-                                val pathMatcher = Pattern.compile("<path>(.*?)</path>").matcher(dlInfoResponse)
-                                val tsMatcher = Pattern.compile("<ts>(.*?)</ts>").matcher(dlInfoResponse)
-                                val sMatcher = Pattern.compile("<s>(.*?)</s>").matcher(dlInfoResponse)
-                                if (hostMatcher.find() && pathMatcher.find() && tsMatcher.find() && sMatcher.find()) {
-                                    val host = hostMatcher.group(1)
-                                    val path = pathMatcher.group(1)
-                                    val ts = tsMatcher.group(1)
-                                    val s = sMatcher.group(1)
-                                    val signStr = "XGRlBW9FXlekgbPrRHuSiA${path.substring(1)}${s}"
-                                    val md = MessageDigest.getInstance("MD5")
-                                    val digest = md.digest(signStr.toByteArray())
-                                    val sign = digest.joinToString("") { "%02x".format(it) }
-                                    directDownloadUrl = "https://$host/get-mp3/$sign/$ts$path"
-                                }
-                            }
-                        }
-                    } catch (e: Throwable) {}
-                }
+                // 1. Try download-info for full track (if user has Plus)
+                var directDownloadUrl = fetchDirectDownloadUrl(trackId, token, targetQuality)
 
                 if (directDownloadUrl != null && !directDownloadUrl.contains("preview.mp3") && !directDownloadUrl.contains("/preview")) {
                     downloadAndTagFile(
@@ -2570,7 +2602,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 var successCount = 0
                 var skippedCount = 0
                 var activeCount = 0
-                val maxConcurrent = 4
+                val maxConcurrent = 2
                 val lock = Object()
                 
                 initNotification(activity)
