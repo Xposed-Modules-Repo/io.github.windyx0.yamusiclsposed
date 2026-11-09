@@ -118,9 +118,9 @@ fun openUrl(context: Context, url: String) {
     }
 }
 
-fun fetchLatestRelease(currentVersionCode: Int = 2, currentVersionName: String = "1.1"): UpdateState {
+fun fetchLatestRelease(currentVersionCode: Int = 4, currentVersionName: String = "1.3", channel: String = "release"): UpdateState {
     return try {
-        val url = URL("https://api.github.com/repos/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed/releases/latest")
+        val url = URL("https://api.github.com/repos/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed/releases")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = 7000
             readTimeout = 7000
@@ -129,11 +129,55 @@ fun fetchLatestRelease(currentVersionCode: Int = 2, currentVersionName: String =
         }
         if (conn.responseCode in 200..299) {
             val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-            val json = JSONObject(responseText)
-            val tagName = json.optString("tag_name", "")
-            val releaseName = json.optString("name", tagName)
-            val body = json.optString("body", "")
-            val htmlUrl = json.optString("html_url", "https://github.com/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed/releases")
+            val releases = org.json.JSONArray(responseText)
+            if (releases.length() == 0) {
+                return UpdateState.UpToDate(currentVersionName)
+            }
+
+            var targetRelease: JSONObject? = null
+            for (i in 0 until releases.length()) {
+                val rel = releases.getJSONObject(i)
+                val isDraft = rel.optBoolean("draft", false)
+                if (isDraft) continue
+                val isPre = rel.optBoolean("prerelease", false)
+                val tag = rel.optString("tag_name", "").lowercase()
+                val name = rel.optString("name", "").lowercase()
+                val isDevTag = tag.contains("dev") || name.contains("dev")
+
+                when (channel) {
+                    "release" -> {
+                        if (!isPre && !isDevTag && !tag.contains("pre") && !tag.contains("rc") && !tag.contains("beta")) {
+                            targetRelease = rel
+                            break
+                        }
+                    }
+                    "pre" -> {
+                        if (!isDevTag) {
+                            targetRelease = rel
+                            break
+                        }
+                    }
+                    "dev" -> {
+                        targetRelease = rel
+                        break
+                    }
+                    else -> {
+                        if (!isPre && !isDevTag) {
+                            targetRelease = rel
+                            break
+                        }
+                    }
+                }
+            }
+
+            if (targetRelease == null) {
+                return UpdateState.UpToDate(currentVersionName)
+            }
+
+            val tagName = targetRelease.optString("tag_name", "")
+            val releaseName = targetRelease.optString("name", tagName)
+            val body = targetRelease.optString("body", "")
+            val htmlUrl = targetRelease.optString("html_url", "https://github.com/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed/releases")
 
             var remoteCode = 0
             var remoteName = tagName
@@ -146,7 +190,7 @@ fun fetchLatestRelease(currentVersionCode: Int = 2, currentVersionName: String =
             }
 
             var apkUrl: String? = null
-            val assets = json.optJSONArray("assets")
+            val assets = targetRelease.optJSONArray("assets")
             if (assets != null) {
                 for (i in 0 until assets.length()) {
                     val item = assets.getJSONObject(i)
@@ -238,6 +282,7 @@ fun YaMusicSettingsScreen(
         var customFolder by remember { mutableStateOf(config.customFolder) }
         var manualToken by remember { mutableStateOf(config.manualToken) }
         var autoDetectedToken by remember { mutableStateOf(MainHook.cachedToken ?: findToken(activity)) }
+        var updateChannel by remember { mutableStateOf(config.updateChannel) }
 
         var isFolderPickerOpen by remember { mutableStateOf(false) }
         var isChangelogOpen by remember { mutableStateOf(false) }
@@ -248,7 +293,7 @@ fun YaMusicSettingsScreen(
             if (updateState is UpdateState.Idle) {
                 updateState = UpdateState.Checking
                 withContext(Dispatchers.IO) {
-                    updateState = fetchLatestRelease(2, "1.1")
+                    updateState = fetchLatestRelease(4, "1.3", updateChannel)
                 }
             }
         }
@@ -631,7 +676,7 @@ fun YaMusicSettingsScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = "Текущая версия: v1.1 (код 2)",
+                                                text = "Текущая версия: v1.3 (код 4)",
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 fontWeight = FontWeight.Medium,
                                                 color = MaterialTheme.colorScheme.onSurface
@@ -714,6 +759,45 @@ fun YaMusicSettingsScreen(
 
                                     Spacer(modifier = Modifier.height(10.dp))
 
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Text(
+                                        text = "Канал обновлений:",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        listOf(
+                                            "release" to "Release",
+                                            "pre" to "Pre-release",
+                                            "dev" to "Dev"
+                                        ).forEach { (ch, label) ->
+                                            val isSelected = (updateChannel == ch)
+                                            FilterChip(
+                                                selected = isSelected,
+                                                onClick = {
+                                                    updateChannel = ch
+                                                    activity.getSharedPreferences("YaMusicDL_Prefs", Context.MODE_PRIVATE)
+                                                        .edit().putString("update_channel", ch).apply()
+                                                    coroutineScope.launch {
+                                                        updateState = UpdateState.Checking
+                                                        withContext(Dispatchers.IO) {
+                                                            updateState = fetchLatestRelease(4, "1.3", ch)
+                                                        }
+                                                    }
+                                                },
+                                                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                                shape = RoundedCornerShape(8.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
                                     Row(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         modifier = Modifier.fillMaxWidth()
@@ -723,7 +807,7 @@ fun YaMusicSettingsScreen(
                                                 coroutineScope.launch {
                                                     updateState = UpdateState.Checking
                                                     withContext(Dispatchers.IO) {
-                                                        updateState = fetchLatestRelease(2, "1.1")
+                                                        updateState = fetchLatestRelease(4, "1.3", updateChannel)
                                                     }
                                                 }
                                             },
@@ -747,7 +831,7 @@ fun YaMusicSettingsScreen(
                             item {
                                 Md3SectionCard(title = "О модуле (YaMusicLsposed)") {
                                     Text(
-                                        text = "Версия 1.1 • Разработчик: Windyx0",
+                                        text = "Версия 1.3 • Разработчик: Windyx0",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -814,7 +898,8 @@ fun YaMusicSettingsScreen(
                                             coverSize = coverSize,
                                             folderType = folderType,
                                             customFolder = customFolder,
-                                            manualToken = manualToken
+                                            manualToken = manualToken,
+                                            updateChannel = updateChannel
                                         )
                                     )
                                 },
