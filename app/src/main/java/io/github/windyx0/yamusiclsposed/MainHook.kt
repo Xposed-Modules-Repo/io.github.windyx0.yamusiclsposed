@@ -850,198 +850,192 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
             context: Context,
             cancelCheck: (() -> Boolean)? = null,
             onProgress: ((Float) -> Unit)? = null
-        ): Boolean {
-            synchronized(lameLock) {
-                ensureLameLoaded(context)
-                val extractor = MediaExtractor()
-                var decoder: MediaCodec? = null
-                var lame: AndroidLame? = null
+        ): Boolean = synchronized(lameLock) {
+            ensureLameLoaded(context)
+            val extractor = MediaExtractor()
+            var decoder: MediaCodec? = null
+            var lame: AndroidLame? = null
 
-                try {
-                    extractor.setDataSource(inputFile.absolutePath)
-                    var audioTrackIndex = -1
-                    var format: MediaFormat? = null
+            try {
+                extractor.setDataSource(inputFile.absolutePath)
+                var audioTrackIndex = -1
+                var format: MediaFormat? = null
 
-                    for (i in 0 until extractor.trackCount) {
-                        val trackFormat = extractor.getTrackFormat(i)
-                        val mime = trackFormat.getString(MediaFormat.KEY_MIME) ?: ""
-                        if (mime.startsWith("audio/")) {
-                            audioTrackIndex = i
-                            format = trackFormat
-                            break
-                        }
+                for (i in 0 until extractor.trackCount) {
+                    val trackFormat = extractor.getTrackFormat(i)
+                    val mime = trackFormat.getString(MediaFormat.KEY_MIME) ?: ""
+                    if (mime.startsWith("audio/")) {
+                        audioTrackIndex = i
+                        format = trackFormat
+                        break
                     }
-
-                    if (audioTrackIndex < 0 || format == null) {
-                        android.util.Log.e("YaMusicLsposed", "No audio track found in ${inputFile.name}")
-                        return false
-                    }
-
-                    extractor.selectTrack(audioTrackIndex)
-                    val mime = format.getString(MediaFormat.KEY_MIME) ?: "audio/mp4a-latm"
-                    val sampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                        format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    } else 44100
-                    val channelCount = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                        format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                    } else 2
-                    val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) {
-                        format.getLong(MediaFormat.KEY_DURATION)
-                    } else 0L
-
-                    val dec = try {
-                        MediaCodec.createByCodecName("c2.android.aac.decoder")
-                    } catch (e: Throwable) {
-                        MediaCodec.createDecoderByType(mime)
-                    }
-                    decoder = dec
-                    android.util.Log.i("YaMusicLsposed", "Using audio decoder: ${dec.name}")
-                    dec.configure(format, null, null, 0)
-                    dec.start()
-
-                    var actualSampleRate = sampleRate
-                    var actualChannels = channelCount
-
-                    val bufferInfo = MediaCodec.BufferInfo()
-                    var inputEOS = false
-                    var outputEOS = false
-                    val mp3Buffer = ByteArray(65536)
-                    var pcmShorts: ShortArray? = null
-
-                    val mp3Out = java.io.BufferedOutputStream(FileOutputStream(outputFile), 65536)
-                    val tStart = System.currentTimeMillis()
-                    var tEncodeTotal = 0L
-                    var lastProgressTime = 0L
-                    var lastReportedProgress = -1
-                    try {
-                        while (!outputEOS) {
-                            if (cancelCheck?.invoke() == true) {
-                                throw RuntimeException("Cancelled")
-                            }
-
-                            var fedAny = false
-                            while (!inputEOS) {
-                                val inIndex = dec.dequeueInputBuffer(0L)
-                                if (inIndex < 0) break
-                                val inBuffer = dec.getInputBuffer(inIndex) ?: break
-                                inBuffer.clear()
-                                val sampleSize = extractor.readSampleData(inBuffer, 0)
-                                if (sampleSize < 0) {
-                                    dec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                    inputEOS = true
-                                } else {
-                                    val pts = extractor.sampleTime
-                                    dec.queueInputBuffer(inIndex, 0, sampleSize, pts, 0)
-                                    extractor.advance()
-                                }
-                                fedAny = true
-                            }
-
-                            var drainedAny = false
-                            while (true) {
-                                val timeoutUs = if (!fedAny && !drainedAny) 2000L else 0L
-                                val outIndex = dec.dequeueOutputBuffer(bufferInfo, timeoutUs)
-                                if (outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                                    break
-                                }
-                                if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                                    val newFormat = dec.outputFormat
-                                    actualSampleRate = if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                                        newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                                    } else actualSampleRate
-                                    actualChannels = if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                                        newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                                    } else actualChannels
-                                    drainedAny = true
-                                    continue
-                                }
-                                if (outIndex < 0) break
-
-                                drainedAny = true
-                                if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                                    outputEOS = true
-                                }
-
-                                if (lame == null) {
-                                    val builder = LameBuilder()
-                                        .setInSampleRate(actualSampleRate)
-                                        .setOutSampleRate(actualSampleRate)
-                                        .setOutChannels(actualChannels)
-                                        .setOutBitrate(targetBitrateKbps)
-                                        .setQuality(7)
-                                        .setMode(if (actualChannels == 1) LameBuilder.Mode.MONO else LameBuilder.Mode.STEREO)
-                                    lame = builder.build()
-                                }
-
-                                val outBuffer = dec.getOutputBuffer(outIndex)
-                                if (outBuffer != null && bufferInfo.size > 0) {
-                                    outBuffer.position(bufferInfo.offset)
-                                    outBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                                    outBuffer.order(ByteOrder.LITTLE_ENDIAN)
-
-                                    val shortBuffer = outBuffer.asShortBuffer()
-                                    val numShorts = shortBuffer.remaining()
-                                    if (numShorts > 0) {
-                                        if (pcmShorts == null || pcmShorts!!.size < numShorts) {
-                                            pcmShorts = ShortArray(numShorts)
-                                        }
-                                        shortBuffer.get(pcmShorts, 0, numShorts)
-
-                                        val samplesPerChannel = numShorts / actualChannels
-                                        if (samplesPerChannel > 0) {
-                                            val l = lame!!
-                                            val tEnc0 = System.currentTimeMillis()
-                                            val encoded = if (actualChannels == 1) {
-                                                l.encode(pcmShorts, pcmShorts, numShorts, mp3Buffer)
-                                            } else {
-                                                l.encodeBufferInterLeaved(pcmShorts, samplesPerChannel, mp3Buffer)
-                                            }
-                                            tEncodeTotal += (System.currentTimeMillis() - tEnc0)
-                                            if (encoded > 0) {
-                                                mp3Out.write(mp3Buffer, 0, encoded)
-                                            }
-                                        }
-                                    }
-
-                                    if (durationUs > 0L) {
-                                        val progress = (bufferInfo.presentationTimeUs.toFloat() / durationUs.toFloat()) * 100f
-                                        val pInt = progress.toInt()
-                                        val now = System.currentTimeMillis()
-                                        if (pInt != lastReportedProgress && now - lastProgressTime >= 150) {
-                                            lastProgressTime = now
-                                            lastReportedProgress = pInt
-                                            onProgress?.invoke(progress.coerceIn(0f, 99f))
-                                        }
-                                    }
-                                }
-
-                                dec.releaseOutputBuffer(outIndex, false)
-                                if (outputEOS) break
-                            }
-                        }
-
-                        if (lame != null) {
-                            val flushBytes = lame.flush(mp3Buffer)
-                            if (flushBytes > 0) {
-                                mp3Out.write(mp3Buffer, 0, flushBytes)
-                            }
-                        }
-                        mp3Out.flush()
-                    } finally {
-                        mp3Out.close()
-                    }
-
-                    val totalTime = System.currentTimeMillis() - tStart
-                    android.util.Log.i("YaMusicLsposed", "convertM4aToMp3 finished: total=${totalTime}ms, LAME encoding=${tEncodeTotal}ms, decoding/loop=${totalTime - tEncodeTotal}ms")
-                    return outputFile.exists() && outputFile.length() > 0
-                } catch (t: Throwable) {
-                    android.util.Log.e("YaMusicLsposed", "convertM4aToMp3 error: ${t.stackTraceToString()}")
-                    return false
-                } finally {
-                    try { lame?.close() } catch (e: Throwable) {}
-                    try { decoder?.stop(); decoder?.release() } catch (e: Throwable) {}
-                    try { extractor.release() } catch (e: Throwable) {}
                 }
+
+                if (audioTrackIndex < 0 || format == null) {
+                    android.util.Log.e("YaMusicLsposed", "No audio track found in ${inputFile.name}")
+                    return false
+                }
+
+                extractor.selectTrack(audioTrackIndex)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: "audio/mp4a-latm"
+                val sampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                    format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                } else 44100
+                val channelCount = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                    format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                } else 2
+                val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                    format.getLong(MediaFormat.KEY_DURATION)
+                } else 0L
+
+                val dec = try {
+                    MediaCodec.createDecoderByType(mime)
+                } catch (e: Throwable) {
+                    MediaCodec.createByCodecName("c2.android.aac.decoder")
+                }
+                decoder = dec
+                android.util.Log.i("YaMusicLsposed", "Using audio decoder: ${dec.name}")
+                dec.configure(format, null, null, 0)
+                dec.start()
+
+                var actualSampleRate = sampleRate
+                var actualChannels = channelCount
+
+                val bufferInfo = MediaCodec.BufferInfo()
+                var inputEOS = false
+                var outputEOS = false
+                val mp3Buffer = ByteArray(131072)
+                var pcmShorts: ShortArray? = null
+
+                val mp3Out = java.io.BufferedOutputStream(FileOutputStream(outputFile), 131072)
+                val tStart = System.currentTimeMillis()
+                var tEncodeTotal = 0L
+                var lastProgressTime = 0L
+                var lastReportedProgress = -1
+                try {
+                    while (!outputEOS) {
+                        if (cancelCheck?.invoke() == true) {
+                            throw RuntimeException("Cancelled")
+                        }
+
+                        while (!inputEOS) {
+                            val inIndex = dec.dequeueInputBuffer(0L)
+                            if (inIndex < 0) break
+                            val inBuffer = dec.getInputBuffer(inIndex) ?: break
+                            inBuffer.clear()
+                            val sampleSize = extractor.readSampleData(inBuffer, 0)
+                            if (sampleSize < 0) {
+                                dec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputEOS = true
+                            } else {
+                                val pts = extractor.sampleTime
+                                dec.queueInputBuffer(inIndex, 0, sampleSize, pts, 0)
+                                extractor.advance()
+                            }
+                        }
+
+                        var waitUs = if (inputEOS) 5000L else 1000L
+                        while (true) {
+                            val outIndex = dec.dequeueOutputBuffer(bufferInfo, waitUs)
+                            waitUs = 0L
+                            if (outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                                break
+                            }
+                            if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                                val newFormat = dec.outputFormat
+                                actualSampleRate = if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                                    newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                                } else actualSampleRate
+                                actualChannels = if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                                    newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                                } else actualChannels
+                                continue
+                            }
+                            if (outIndex < 0) break
+
+                            if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                                outputEOS = true
+                            }
+
+                            if (lame == null) {
+                                val builder = LameBuilder()
+                                    .setInSampleRate(actualSampleRate)
+                                    .setOutSampleRate(actualSampleRate)
+                                    .setOutChannels(actualChannels)
+                                    .setOutBitrate(targetBitrateKbps)
+                                    .setQuality(7)
+                                    .setMode(if (actualChannels == 1) LameBuilder.Mode.MONO else LameBuilder.Mode.STEREO)
+                                lame = builder.build()
+                            }
+
+                            val outBuffer = dec.getOutputBuffer(outIndex)
+                            if (outBuffer != null && bufferInfo.size > 0) {
+                                outBuffer.position(bufferInfo.offset)
+                                outBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                                outBuffer.order(ByteOrder.LITTLE_ENDIAN)
+
+                                val shortBuffer = outBuffer.asShortBuffer()
+                                val numShorts = shortBuffer.remaining()
+                                if (numShorts > 0) {
+                                    if (pcmShorts == null || pcmShorts!!.size < numShorts) {
+                                        pcmShorts = ShortArray(numShorts)
+                                    }
+                                    shortBuffer.get(pcmShorts, 0, numShorts)
+
+                                    val samplesPerChannel = numShorts / actualChannels
+                                    if (samplesPerChannel > 0) {
+                                        val l = lame!!
+                                        val tEnc0 = System.currentTimeMillis()
+                                        val encoded = if (actualChannels == 1) {
+                                            l.encode(pcmShorts, pcmShorts, numShorts, mp3Buffer)
+                                        } else {
+                                            l.encodeBufferInterLeaved(pcmShorts, samplesPerChannel, mp3Buffer)
+                                        }
+                                        tEncodeTotal += (System.currentTimeMillis() - tEnc0)
+                                        if (encoded > 0) {
+                                            mp3Out.write(mp3Buffer, 0, encoded)
+                                        }
+                                    }
+                                }
+
+                                if (durationUs > 0L) {
+                                    val progress = (bufferInfo.presentationTimeUs.toFloat() / durationUs.toFloat()) * 100f
+                                    val pInt = progress.toInt()
+                                    val now = System.currentTimeMillis()
+                                    if (pInt != lastReportedProgress && now - lastProgressTime >= 100) {
+                                        lastProgressTime = now
+                                        lastReportedProgress = pInt
+                                        onProgress?.invoke(progress.coerceIn(0f, 99f))
+                                    }
+                                }
+                            }
+
+                            dec.releaseOutputBuffer(outIndex, false)
+                            if (outputEOS) break
+                        }
+                    }
+
+                    if (lame != null) {
+                        val flushBytes = lame.flush(mp3Buffer)
+                        if (flushBytes > 0) {
+                            mp3Out.write(mp3Buffer, 0, flushBytes)
+                        }
+                    }
+                    mp3Out.flush()
+                } finally {
+                    mp3Out.close()
+                }
+
+                val totalTime = System.currentTimeMillis() - tStart
+                android.util.Log.i("YaMusicLsposed", "convertM4aToMp3 finished: total=${totalTime}ms, LAME encoding=${tEncodeTotal}ms, decoding/loop=${totalTime - tEncodeTotal}ms")
+                return outputFile.exists() && outputFile.length() > 0
+            } catch (t: Throwable) {
+                android.util.Log.e("YaMusicLsposed", "convertM4aToMp3 error: ${t.stackTraceToString()}")
+                return false
+            } finally {
+                try { lame?.close() } catch (e: Throwable) {}
+                try { decoder?.stop(); decoder?.release() } catch (e: Throwable) {}
+                try { extractor.release() } catch (e: Throwable) {}
             }
         }
     }
