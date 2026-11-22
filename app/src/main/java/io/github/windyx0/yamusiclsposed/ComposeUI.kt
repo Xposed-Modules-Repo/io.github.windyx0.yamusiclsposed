@@ -1040,6 +1040,8 @@ fun YaMusicSettingsScreen(
 
                                     Row(
 
+                                        modifier = Modifier.fillMaxWidth(),
+
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
 
                                         verticalAlignment = Alignment.CenterVertically
@@ -1047,6 +1049,8 @@ fun YaMusicSettingsScreen(
                                     ) {
 
                                         FilledTonalButton(
+                                        modifier = if (manualToken.isNotBlank()) Modifier.weight(1f) else Modifier.fillMaxWidth(),
+
 
                                             onClick = {
 
@@ -1072,7 +1076,7 @@ fun YaMusicSettingsScreen(
 
                                         ) {
 
-                                            Text("Найти токен", style = MaterialTheme.typography.labelLarge)
+                                            Text("Найти токен", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelMedium)
 
                                         }
 
@@ -1081,6 +1085,8 @@ fun YaMusicSettingsScreen(
                                         if (manualToken.isNotBlank()) {
 
                                             OutlinedButton(
+                                            modifier = Modifier.weight(1f),
+
 
                                                 onClick = { manualToken = "" },
 
@@ -1090,7 +1096,7 @@ fun YaMusicSettingsScreen(
 
                                             ) {
 
-                                                Text("Сбросить на авто", style = MaterialTheme.typography.labelLarge)
+                                                Text("Сбросить", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelMedium)
 
                                             }
 
@@ -1154,7 +1160,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text(label, fontWeight = FontWeight.SemiBold)
+                                                        Text(label, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
 
                                                     }
 
@@ -1226,7 +1232,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text("320 kbps (HQ)")
+                                                        Text("320 kbps (HQ)", maxLines = 1, softWrap = false, fontSize = 12.sp, fontWeight = FontWeight.Medium)
 
                                                     }
 
@@ -1264,7 +1270,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text("192 kbps (STD)")
+                                                        Text("192 kbps (STD)", maxLines = 1, softWrap = false, fontSize = 12.sp, fontWeight = FontWeight.Medium)
 
                                                     }
 
@@ -1996,7 +2002,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text("GitHub")
+                                                        Text("GitHub", maxLines = 1, softWrap = false, fontSize = 12.sp)
 
                                                     }
 
@@ -2020,7 +2026,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text("Канал (TG)")
+                                                        Text("Канал (TG)", maxLines = 1, softWrap = false, fontSize = 12.sp)
 
                                                     }
 
@@ -2054,7 +2060,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text("ЛС (TG)")
+                                                        Text("ЛС (TG)", maxLines = 1, softWrap = false, fontSize = 12.sp)
 
                                                     }
 
@@ -2078,7 +2084,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text("TikTok")
+                                                        Text("TikTok", maxLines = 1, softWrap = false, fontSize = 12.sp)
 
                                                     }
 
@@ -3407,61 +3413,73 @@ fun CacheDecryptorScreen(
             // Action row
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(
-                        onClick = { scan() },
-                        enabled = !isScanning && !isProcessingAll,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text(if (isScanning) "Поиск..." else "Обновить", style = MaterialTheme.typography.labelMedium)
-                    }
-
-                    if (filteredTracks.isNotEmpty()) {
-                        Button(
-                            onClick = {
-                                if (token.isBlank()) {
-                                    Toast.makeText(activity, "Требуется токен авторизации!", Toast.LENGTH_SHORT).show()
-                                    return@Button
-                                }
-                                coroutineScope.launch {
-                                    isProcessingAll = true
-                                    withContext(Dispatchers.IO) {
-                                        for (item in filteredTracks) {
-                                            YaMusicCacheDecryptor.decryptAndExportTrackGroup(
-                                                context = activity,
-                                                group = item,
-                                                token = token,
-                                                targetDir = File(targetFolder),
-                                                onProgress = { p ->
-                                                    decryptProgress = decryptProgress + (item.trackId to p)
-                                                }
-                                            ).let { res ->
-                                                decryptStatus = decryptStatus + (item.trackId to (if (res.success) "Готово: ${res.exportedFile?.name}" else res.message))
-                                            }
-                                        }
-                                    }
-                                    isProcessingAll = false
-                                }
-                            },
-                            enabled = !isProcessingAll && token.isNotBlank(),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Text(if (isProcessingAll) "Экспорт..." else "Экспорт всех (${filteredTracks.size})", style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
+                FilledTonalButton(
+                    onClick = { scan() },
+                    enabled = !isScanning && !isProcessingAll,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        if (isScanning) "Поиск..." else "Обновить",
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
 
-                Text(
-                    text = "Найдено: ${filteredTracks.size}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (filteredTracks.isNotEmpty()) {
+                    Button(
+                        onClick = {
+                            if (token.isBlank()) {
+                                Toast.makeText(activity, "Требуется токен авторизации!", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            coroutineScope.launch {
+                                isProcessingAll = true
+                                withContext(Dispatchers.IO) {
+                                    for (item in filteredTracks) {
+                                        YaMusicCacheDecryptor.decryptAndExportTrackGroup(
+                                            context = activity,
+                                            group = item,
+                                            token = token,
+                                            targetDir = File(targetFolder),
+                                            onProgress = { p ->
+                                                decryptProgress = decryptProgress + (item.trackId to p)
+                                            }
+                                        ).let { res ->
+                                            decryptStatus = decryptStatus + (item.trackId to (if (res.success) "Готово: ${res.exportedFile?.name}" else res.message))
+                                        }
+                                    }
+                                }
+                                isProcessingAll = false
+                            }
+                        },
+                        enabled = !isProcessingAll && token.isNotBlank(),
+                        modifier = Modifier.weight(1.8f),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            if (isProcessingAll) "Экспорт..." else "Экспорт всех (${filteredTracks.size})",
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
             }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "Найдено треков: ${filteredTracks.size}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -3487,7 +3505,7 @@ fun CacheDecryptorScreen(
                         .fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(filteredTracks, key = { it.trackId }) { track ->
+                    items(filteredTracks, key = { "${it.trackId}_${it.exoId}" }) { track ->
                         val currentProgress = decryptProgress[track.trackId] ?: 0f
                         val currentStatus = decryptStatus[track.trackId]
 
@@ -3536,7 +3554,7 @@ fun CacheDecryptorScreen(
                                                 )
                                             }
                                             Text(
-                                                text = "${track.formattedSize} • ${track.codec.uppercase()}",
+                                                text = "${track.formattedSize} • ${track.codec.uppercase()}${if (track.formattedDate.isNotEmpty()) " • ${track.formattedDate}" else ""}",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -3572,7 +3590,9 @@ fun CacheDecryptorScreen(
                                     ) {
                                         Text(
                                             text = if (currentProgress in 1f..99f) "${currentProgress.toInt()}%" else "Экспорт",
-                                            style = MaterialTheme.typography.labelMedium
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            softWrap = false
                                         )
                                     }
                                 }

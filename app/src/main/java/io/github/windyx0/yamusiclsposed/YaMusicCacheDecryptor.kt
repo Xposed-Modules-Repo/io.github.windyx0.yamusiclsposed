@@ -40,7 +40,8 @@ data class CachedTrackGroup(
     val isPermanent: Boolean,
     val totalSizeBytes: Long,
     val chunks: List<CachedChunkFile>,
-    val codec: String
+    val codec: String,
+    val lastModified: Long = 0L
 ) {
     val displayName: String
         get() = "$artist - $title"
@@ -50,6 +51,13 @@ data class CachedTrackGroup(
             totalSizeBytes >= 1024 * 1024 -> "%.1f МБ".format(totalSizeBytes.toFloat() / (1024 * 1024))
             totalSizeBytes >= 1024 -> "%.0f КБ".format(totalSizeBytes.toFloat() / 1024)
             else -> "$totalSizeBytes Б"
+        }
+
+    val formattedDate: String
+        get() {
+            return if (lastModified > 0) {
+                java.text.SimpleDateFormat("dd.MM.yyyy", java.util.Locale.getDefault()).format(java.util.Date(lastModified))
+            } else ""
         }
 }
 
@@ -233,6 +241,7 @@ object YaMusicCacheDecryptor {
                 val title = meta?.title ?: "Трек #${streamInfo.trackId}"
                 val artist = meta?.artist ?: "Yandex Music"
                 val isPerm = meta?.isPermanent ?: false
+                val trackLastModified = chunkList.maxOfOrNull { it.file.lastModified() } ?: 0L
 
                 result.add(
                     CachedTrackGroup(
@@ -243,7 +252,8 @@ object YaMusicCacheDecryptor {
                         isPermanent = isPerm,
                         totalSizeBytes = totalSize,
                         chunks = chunkList,
-                        codec = streamInfo.codec
+                        codec = streamInfo.codec,
+                        lastModified = trackLastModified
                     )
                 )
             }
@@ -253,7 +263,7 @@ object YaMusicCacheDecryptor {
         }
 
         return result.sortedWith(
-            compareByDescending<CachedTrackGroup> { it.isPermanent }
+            compareByDescending<CachedTrackGroup> { it.lastModified }
                 .thenBy { it.artist.lowercase() }
                 .thenBy { it.title.lowercase() }
         )
