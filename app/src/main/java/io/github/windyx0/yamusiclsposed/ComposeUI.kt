@@ -238,7 +238,7 @@ fun openUrl(context: Context, url: String) {
 
 
 
-fun fetchLatestRelease(currentVersionCode: Int = 5, currentVersionName: String = "1.4", channel: String = "release"): UpdateState {
+fun fetchLatestRelease(currentVersionCode: Int = 6, currentVersionName: String = "1.4.1", channel: String = "release"): UpdateState {
 
     return try {
 
@@ -482,11 +482,29 @@ val changelogHistory = listOf(
 
     ChangelogItem(
 
-        version = "v1.4",
+        version = "v1.4.1",
 
         date = "Ноябрь 2026",
 
         isCurrent = true,
+
+        points = listOf(
+
+            "Перенос отладочного лога метаданных: файл YaMusicLsposed_Meta.txt перенесен во внутренний каталог /data/data/io.github.windyx0.yamusiclsposed/files/, исключено засорение папки Загрузки.",
+
+            "Автоматическая очистка: удаление старого лог-файла из публичной папки Download на устройстве."
+
+        )
+
+    ),
+
+    ChangelogItem(
+
+        version = "v1.4",
+
+        date = "Ноябрь 2026",
+
+        isCurrent = false,
 
         points = listOf(
 
@@ -642,7 +660,7 @@ fun YaMusicSettingsScreen(
 
                 withContext(Dispatchers.IO) {
 
-                    updateState = fetchLatestRelease(5, "1.4", updateChannel)
+                    updateState = fetchLatestRelease(6, "1.4.1", updateChannel)
 
                 }
 
@@ -826,7 +844,7 @@ fun YaMusicSettingsScreen(
 
                                     Text(
 
-                                        text = "v1.4",
+                                        text = "v1.4.1",
 
                                         style = MaterialTheme.typography.labelMedium,
 
@@ -1650,7 +1668,7 @@ fun YaMusicSettingsScreen(
 
                                             Text(
 
-                                                text = "Текущая версия: v1.4 (код 5)",
+                                                text = "Текущая версия: v1.4.1 (код 6)",
 
                                                 style = MaterialTheme.typography.bodyMedium,
 
@@ -1870,7 +1888,7 @@ fun YaMusicSettingsScreen(
 
                                                         withContext(Dispatchers.IO) {
 
-                                                            updateState = fetchLatestRelease(5, "1.4", ch)
+                                                            updateState = fetchLatestRelease(6, "1.4.1", ch)
 
                                                         }
 
@@ -1912,7 +1930,7 @@ fun YaMusicSettingsScreen(
 
                                                     withContext(Dispatchers.IO) {
 
-                                                        updateState = fetchLatestRelease(5, "1.4", updateChannel)
+                                                        updateState = fetchLatestRelease(6, "1.4.1", updateChannel)
 
                                                     }
 
@@ -1960,7 +1978,7 @@ fun YaMusicSettingsScreen(
 
                                     Text(
 
-                                        text = "Версия 1.4 (код 5) • Разработчик: Windyx0",
+                                        text = "Версия 1.4.1 (код 6) • Разработчик: Windyx0",
 
                                         style = MaterialTheme.typography.bodyMedium,
 
@@ -2085,6 +2103,40 @@ fun YaMusicSettingsScreen(
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
                                                         Text("TikTok", maxLines = 1, softWrap = false, fontSize = 12.sp)
+
+                                                    }
+
+                                                },
+
+                                                shape = RoundedCornerShape(10.dp)
+
+                                            )
+
+                                        }
+
+                                        Row(
+
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+
+                                            modifier = Modifier.fillMaxWidth()
+
+                                        ) {
+
+                                            AssistChip(
+
+                                                modifier = Modifier.fillMaxWidth(),
+
+                                                onClick = {
+
+                                                    openUrl(activity, "https://www.donationalerts.com/r/windyx0")
+
+                                                },
+
+                                                label = {
+
+                                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+
+                                                        Text("Поддержать автора (DonationAlerts)", maxLines = 1, softWrap = false, fontSize = 12.sp)
 
                                                     }
 

@@ -292,10 +292,48 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
             }
         }
 
+        
+        fun getMetaLogFile(context: Context? = null): File {
+            val targetDir = File("/data/data/io.github.windyx0.yamusiclsposed/files")
+            try {
+                if (!targetDir.exists()) {
+                    targetDir.mkdirs()
+                }
+                if (targetDir.exists()) {
+                    val f = File(targetDir, "YaMusicLsposed_Meta.txt")
+                    if (!f.exists()) f.createNewFile()
+                    if (f.canWrite()) return f
+                }
+            } catch (ignored: Throwable) {}
+
+            val fallbackDir = context?.filesDir ?: File("/data/data/ru.yandex.music/files")
+            try {
+                if (!fallbackDir.exists()) fallbackDir.mkdirs()
+            } catch (ignored: Throwable) {}
+            return File(fallbackDir, "YaMusicLsposed_Meta.txt")
+        }
+
+        fun cleanupPublicMetaLog() {
+            try {
+                val paths = listOf(
+                    "/sdcard/Download/YaMusicLsposed_Meta.txt",
+                    "/sdcard/Download/YandexMusicLsposed_Meta.txt",
+                    "/storage/emulated/0/Download/YaMusicLsposed_Meta.txt",
+                    "/storage/emulated/0/Download/YandexMusicLsposed_Meta.txt"
+                )
+                for (p in paths) {
+                    val f = File(p)
+                    if (f.exists()) {
+                        f.delete()
+                    }
+                }
+            } catch (ignored: Throwable) {}
+        }
+
         fun inspectUrl(urlStr: String) {
             if (urlStr.isEmpty()) return
             try {
-                val logFile = File("/sdcard/Download/YaMusicLsposed_Meta.txt")
+                val logFile = getMetaLogFile(appContext)
                 logFile.appendText("OAuth Request URL: $urlStr\n")
             } catch (e: Throwable) {}
 
@@ -729,14 +767,14 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                       val value = metadata.getString(key) ?: metadata.getLong(key).toString()
                                       android.util.Log.e("YaMusicLsposed", "Metadata $key = $value")
                                       try {
-                                          val logFile = java.io.File("/sdcard/Download/YaMusicLsposed_Meta.txt")
+                                          val logFile = getMetaLogFile(appContext)
                                           logFile.appendText("Metadata $key = $value\n")
                                       } catch (e: Throwable) {}
                                   }
                                 val desc = metadata.description
                                 android.util.Log.e("YaMusicLsposed", "Description mediaId = ${desc.mediaId}, mediaUri = ${desc.mediaUri}")
                                   try {
-                                      val logFile = java.io.File("/sdcard/Download/YaMusicLsposed_Meta.txt")
+                                      val logFile = getMetaLogFile(appContext)
                                       logFile.appendText("Description mediaId = ${desc.mediaId}, mediaUri = ${desc.mediaUri}\n")
                                   } catch (e: Throwable) {}
                             } catch (e: Throwable) {}
