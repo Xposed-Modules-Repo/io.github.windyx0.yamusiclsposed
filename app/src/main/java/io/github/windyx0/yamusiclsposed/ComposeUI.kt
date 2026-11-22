@@ -1132,21 +1132,33 @@ fun YaMusicSettingsScreen(
 
                                     ) {
 
-                                        listOf("MP3" to "MP3", "FLAC" to "FLAC (Lossless)", "M4A" to "M4A (AAC)").forEach { (fmt, label) ->
+                                        listOf("MP3" to "MP3", "FLAC" to "FLAC", "M4A" to "M4A").forEach { (fmt, label) ->
 
                                             FilterChip(
 
-                                                modifier = Modifier.semantics {
+                                                modifier = Modifier
 
-                                                    stateDescription = if (audioFormat == fmt) "Выбрано" else "Не выбрано"
+                                                    .weight(1f)
 
-                                                },
+                                                    .semantics {
+
+                                                        stateDescription = if (audioFormat == fmt) "Выбрано" else "Не выбрано"
+
+                                                    },
 
                                                 selected = audioFormat == fmt,
 
                                                 onClick = { audioFormat = fmt },
 
-                                                label = { Text(label) },
+                                                label = {
+
+                                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+
+                                                        Text(label, fontWeight = FontWeight.SemiBold)
+
+                                                    }
+
+                                                },
 
                                                 shape = RoundedCornerShape(12.dp),
 
@@ -1188,7 +1200,7 @@ fun YaMusicSettingsScreen(
 
                                         Row(
 
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
 
                                             modifier = Modifier.fillMaxWidth()
 
@@ -1196,17 +1208,29 @@ fun YaMusicSettingsScreen(
 
                                             FilterChip(
 
-                                                modifier = Modifier.semantics {
+                                                modifier = Modifier
 
-                                                    stateDescription = if (quality == 320) "Выбрано" else "Не выбрано"
+                                                    .weight(1f)
 
-                                                },
+                                                    .semantics {
+
+                                                        stateDescription = if (quality == 320) "Выбрано" else "Не выбрано"
+
+                                                    },
 
                                                 selected = quality == 320,
 
                                                 onClick = { quality = 320 },
 
-                                                label = { Text("320 kbps (HQ)") },
+                                                label = {
+
+                                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+
+                                                        Text("320 kbps (HQ)")
+
+                                                    }
+
+                                                },
 
                                                 shape = RoundedCornerShape(12.dp),
 
@@ -1222,17 +1246,29 @@ fun YaMusicSettingsScreen(
 
                                             FilterChip(
 
-                                                modifier = Modifier.semantics {
+                                                modifier = Modifier
 
-                                                    stateDescription = if (quality == 192) "Выбрано" else "Не выбрано"
+                                                    .weight(1f)
 
-                                                },
+                                                    .semantics {
+
+                                                        stateDescription = if (quality == 192) "Выбрано" else "Не выбрано"
+
+                                                    },
 
                                                 selected = quality == 192,
 
                                                 onClick = { quality = 192 },
 
-                                                label = { Text("192 kbps (Standard)") },
+                                                label = {
+
+                                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+
+                                                        Text("192 kbps (STD)")
+
+                                                    }
+
+                                                },
 
                                                 shape = RoundedCornerShape(12.dp),
 
@@ -1930,69 +1966,129 @@ fun YaMusicSettingsScreen(
 
                                     Spacer(modifier = Modifier.height(8.dp))
 
-                                    Row(
+                                    Column(
 
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
 
                                         modifier = Modifier.fillMaxWidth()
 
                                     ) {
 
-                                        AssistChip(
+                                        Row(
 
-                                            onClick = {
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
 
-                                                openUrl(activity, "https://github.com/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed")
+                                            modifier = Modifier.fillMaxWidth()
 
-                                            },
+                                        ) {
 
-                                            label = { Text("GitHub") },
+                                            AssistChip(
 
-                                            shape = RoundedCornerShape(10.dp)
+                                                modifier = Modifier.weight(1f),
 
-                                        )
+                                                onClick = {
 
-                                        AssistChip(
+                                                    openUrl(activity, "https://github.com/Xposed-Modules-Repo/io.github.windyx0.yamusiclsposed")
 
-                                            onClick = {
+                                                },
 
-                                                openUrl(activity, "https://t.me/WindyxChannel")
+                                                label = {
 
-                                            },
+                                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                            label = { Text("Канал (TG)") },
+                                                        Text("GitHub")
 
-                                            shape = RoundedCornerShape(10.dp)
+                                                    }
 
-                                        )
+                                                },
 
-                                        AssistChip(
+                                                shape = RoundedCornerShape(10.dp)
 
-                                            onClick = {
+                                            )
 
-                                                openUrl(activity, "https://t.me/Windyx0")
+                                            AssistChip(
 
-                                            },
+                                                modifier = Modifier.weight(1f),
 
-                                            label = { Text("ЛС (TG)") },
+                                                onClick = {
 
-                                            shape = RoundedCornerShape(10.dp)
+                                                    openUrl(activity, "https://t.me/WindyxChannel")
 
-                                        )
+                                                },
 
-                                        AssistChip(
+                                                label = {
 
-                                            onClick = {
+                                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                openUrl(activity, "https://www.tiktok.com/@windyx_edits")
+                                                        Text("Канал (TG)")
 
-                                            },
+                                                    }
 
-                                            label = { Text("TikTok") },
+                                                },
 
-                                            shape = RoundedCornerShape(10.dp)
+                                                shape = RoundedCornerShape(10.dp)
 
-                                        )
+                                            )
+
+                                        }
+
+                                        Row(
+
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+
+                                            modifier = Modifier.fillMaxWidth()
+
+                                        ) {
+
+                                            AssistChip(
+
+                                                modifier = Modifier.weight(1f),
+
+                                                onClick = {
+
+                                                    openUrl(activity, "https://t.me/Windyx0")
+
+                                                },
+
+                                                label = {
+
+                                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+
+                                                        Text("ЛС (TG)")
+
+                                                    }
+
+                                                },
+
+                                                shape = RoundedCornerShape(10.dp)
+
+                                            )
+
+                                            AssistChip(
+
+                                                modifier = Modifier.weight(1f),
+
+                                                onClick = {
+
+                                                    openUrl(activity, "https://www.tiktok.com/@windyx_edits")
+
+                                                },
+
+                                                label = {
+
+                                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+
+                                                        Text("TikTok")
+
+                                                    }
+
+                                                },
+
+                                                shape = RoundedCornerShape(10.dp)
+
+                                            )
+
+                                        }
 
                                     }
 
@@ -3148,11 +3244,12 @@ fun CacheDecryptorScreen(
     token: String,
     targetFolder: String
 ) {
-    var scannedFiles by remember { mutableStateOf<List<CachedTrackItem>>(emptyList()) }
+    var allTrackGroups by remember { mutableStateOf<List<CachedTrackGroup>>(emptyList()) }
+    var selectedTab by remember { mutableStateOf(0) } // 0: Offline, 1: All
+    var searchQuery by remember { mutableStateOf("") }
     var isScanning by remember { mutableStateOf(false) }
     var decryptProgress by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
     var decryptStatus by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var manualTrackIds by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var isProcessingAll by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -3160,9 +3257,9 @@ fun CacheDecryptorScreen(
         coroutineScope.launch {
             isScanning = true
             val items = withContext(Dispatchers.IO) {
-                YaMusicCacheDecryptor.scanCacheFiles(activity)
+                YaMusicCacheDecryptor.scanCacheTracks(activity)
             }
-            scannedFiles = items
+            allTrackGroups = items
             isScanning = false
         }
     }
@@ -3171,10 +3268,25 @@ fun CacheDecryptorScreen(
         scan()
     }
 
+    val offlineCount = remember(allTrackGroups) { allTrackGroups.count { it.isPermanent } }
+    val totalCount = remember(allTrackGroups) { allTrackGroups.size }
+
+    val filteredTracks = remember(allTrackGroups, selectedTab, searchQuery) {
+        allTrackGroups.filter { track ->
+            val matchesTab = if (selectedTab == 0) track.isPermanent else true
+            val matchesSearch = if (searchQuery.isBlank()) true else {
+                track.artist.contains(searchQuery, ignoreCase = true) ||
+                track.title.contains(searchQuery, ignoreCase = true) ||
+                track.trackId.contains(searchQuery)
+            }
+            matchesTab && matchesSearch
+        }
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxWidth(0.95f)
-            .fillMaxHeight(0.90f)
+            .fillMaxHeight(0.92f)
             .clickable(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                 indication = null
@@ -3188,7 +3300,7 @@ fun CacheDecryptorScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp)
+                .padding(18.dp)
         ) {
             // Header
             Row(
@@ -3232,15 +3344,65 @@ fun CacheDecryptorScreen(
                 }
             }
 
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Tabs row: Offline vs All
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    modifier = Modifier.weight(1f),
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    label = {
+                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Text("Оффлайн ($offlineCount)", fontWeight = FontWeight.SemiBold)
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+                FilterChip(
+                    modifier = Modifier.weight(1f),
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    label = {
+                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Text("Все в кэше ($totalCount)", fontWeight = FontWeight.SemiBold)
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
 
-            Text(
-                text = "Извлечение зашифрованных оффлайн-треков Яндекс Музыки (AES-CTR) без повторной загрузки трафика. Токен: ${if (token.isNotBlank()) "активен" else "не найден!"}",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (token.isNotBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
+            // Search bar
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Поиск трека или артиста...", style = MaterialTheme.typography.bodyMedium) },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Text("✕", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             // Action row
             Row(
@@ -3255,10 +3417,10 @@ fun CacheDecryptorScreen(
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        Text(if (isScanning) "Поиск..." else "Сканировать", style = MaterialTheme.typography.labelMedium)
+                        Text(if (isScanning) "Поиск..." else "Обновить", style = MaterialTheme.typography.labelMedium)
                     }
 
-                    if (scannedFiles.isNotEmpty()) {
+                    if (filteredTracks.isNotEmpty()) {
                         Button(
                             onClick = {
                                 if (token.isBlank()) {
@@ -3268,21 +3430,17 @@ fun CacheDecryptorScreen(
                                 coroutineScope.launch {
                                     isProcessingAll = true
                                     withContext(Dispatchers.IO) {
-                                        for (item in scannedFiles) {
-                                            val tId = item.estimatedTrackId ?: manualTrackIds[item.file.absolutePath]
-                                            if (!tId.isNullOrBlank()) {
-                                                YaMusicCacheDecryptor.decryptAndExport(
-                                                    context = activity,
-                                                    cacheFile = item.file,
-                                                    trackId = tId,
-                                                    token = token,
-                                                    targetDir = File(targetFolder),
-                                                    onProgress = { p ->
-                                                        decryptProgress = decryptProgress + (item.file.absolutePath to p)
-                                                    }
-                                                ).let { res ->
-                                                    decryptStatus = decryptStatus + (item.file.absolutePath to (if (res.success) "Готово: ${res.exportedFile?.name}" else res.message))
+                                        for (item in filteredTracks) {
+                                            YaMusicCacheDecryptor.decryptAndExportTrackGroup(
+                                                context = activity,
+                                                group = item,
+                                                token = token,
+                                                targetDir = File(targetFolder),
+                                                onProgress = { p ->
+                                                    decryptProgress = decryptProgress + (item.trackId to p)
                                                 }
+                                            ).let { res ->
+                                                decryptStatus = decryptStatus + (item.trackId to (if (res.success) "Готово: ${res.exportedFile?.name}" else res.message))
                                             }
                                         }
                                     }
@@ -3293,27 +3451,22 @@ fun CacheDecryptorScreen(
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Text(if (isProcessingAll) "Экспорт..." else "Экспорт всех", style = MaterialTheme.typography.labelMedium)
+                            Text(if (isProcessingAll) "Экспорт..." else "Экспорт всех (${filteredTracks.size})", style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
 
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest
-                ) {
-                    Text(
-                        text = "Файлов: ${scannedFiles.size}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
-                }
+                Text(
+                    text = "Найдено: ${filteredTracks.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            if (scannedFiles.isEmpty()) {
+            // Track list
+            if (filteredTracks.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -3321,7 +3474,7 @@ fun CacheDecryptorScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = if (isScanning) "Поиск зашифрованных файлов в кэше..." else "Зашифрованных файлов кэша не найдено.\nВключите треки в плеере или сохраните их оффлайн.",
+                        text = if (isScanning) "Сканирование кэша..." else if (selectedTab == 0) "Нет сохраненных оффлайн-треков.\nСкачайте треки в приложении для оффлайн-доступа." else "Кэшированных треков не найдено.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -3332,21 +3485,19 @@ fun CacheDecryptorScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(scannedFiles, key = { it.file.absolutePath }) { item ->
-                        val path = item.file.absolutePath
-                        val currentProgress = decryptProgress[path] ?: 0f
-                        val currentStatus = decryptStatus[path]
-                        val resolvedId = item.estimatedTrackId ?: manualTrackIds[path] ?: ""
+                    items(filteredTracks, key = { it.trackId }) { track ->
+                        val currentProgress = decryptProgress[track.trackId] ?: 0f
+                        val currentStatus = decryptStatus[track.trackId]
 
                         Surface(
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(14.dp),
                             color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f),
                             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
+                            Column(modifier = Modifier.padding(12.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -3354,20 +3505,42 @@ fun CacheDecryptorScreen(
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = item.displayName,
+                                            text = track.title,
                                             style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.SemiBold,
+                                            fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = item.file.name,
-                                            style = MaterialTheme.typography.labelSmall,
+                                            text = track.artist,
+                                            style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = if (track.isPermanent) Color(0xFF2E7D32).copy(alpha = 0.25f) else Color.Gray.copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    text = if (track.isPermanent) "Оффлайн" else "Поток",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = if (track.isPermanent) Color(0xFF81C784) else Color.LightGray,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                            Text(
+                                                text = "${track.formattedSize} • ${track.codec.uppercase()}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
 
                                     Spacer(modifier = Modifier.width(8.dp))
@@ -3378,27 +3551,22 @@ fun CacheDecryptorScreen(
                                                 Toast.makeText(activity, "Требуется токен авторизации!", Toast.LENGTH_SHORT).show()
                                                 return@Button
                                             }
-                                            if (resolvedId.isBlank()) {
-                                                Toast.makeText(activity, "Укажите ID трека!", Toast.LENGTH_SHORT).show()
-                                                return@Button
-                                            }
                                             coroutineScope.launch {
                                                 withContext(Dispatchers.IO) {
-                                                    val res = YaMusicCacheDecryptor.decryptAndExport(
+                                                    val res = YaMusicCacheDecryptor.decryptAndExportTrackGroup(
                                                         context = activity,
-                                                        cacheFile = item.file,
-                                                        trackId = resolvedId,
+                                                        group = track,
                                                         token = token,
                                                         targetDir = File(targetFolder),
                                                         onProgress = { p ->
-                                                            decryptProgress = decryptProgress + (path to p)
+                                                            decryptProgress = decryptProgress + (track.trackId to p)
                                                         }
                                                     )
-                                                    decryptStatus = decryptStatus + (path to (if (res.success) "Готово: ${res.exportedFile?.name}" else res.message))
+                                                    decryptStatus = decryptStatus + (track.trackId to (if (res.success) "Готово: ${res.exportedFile?.name}" else res.message))
                                                 }
                                             }
                                         },
-                                        enabled = !isProcessingAll && token.isNotBlank() && resolvedId.isNotBlank(),
+                                        enabled = !isProcessingAll && token.isNotBlank(),
                                         shape = RoundedCornerShape(10.dp),
                                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                     ) {
@@ -3407,18 +3575,6 @@ fun CacheDecryptorScreen(
                                             style = MaterialTheme.typography.labelMedium
                                         )
                                     }
-                                }
-
-                                if (item.estimatedTrackId == null) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    OutlinedTextField(
-                                        value = manualTrackIds[path] ?: "",
-                                        onValueChange = { manualTrackIds = manualTrackIds + (path to it) },
-                                        label = { Text("ID трека Яндекс Музыки") },
-                                        placeholder = { Text("например 12345678") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
                                 }
 
                                 if (currentProgress > 0f) {

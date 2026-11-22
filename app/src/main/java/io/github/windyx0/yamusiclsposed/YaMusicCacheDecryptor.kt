@@ -2,35 +2,56 @@ package io.github.windyx0.yamusiclsposed
 
 import android.content.Context
 import android.content.Intent
+import android.database.sqlite.SQLiteDatabase
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Environment
 import com.mpatric.mp3agic.ID3v24Tag
 import com.mpatric.mp3agic.Mp3File
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.SequenceInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.security.MessageDigest
+import java.util.Collections
 import javax.crypto.Cipher
 import javax.crypto.CipherInputStream
 import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-data class CachedTrackItem(
+data class CachedChunkFile(
     val file: File,
-    val sizeBytes: Long,
-    val estimatedTrackId: String?,
-    val displayName: String
+    val offset: Long,
+    val length: Long
 )
+
+data class CachedTrackGroup(
+    val exoId: Int,
+    val trackId: String,
+    val artist: String,
+    val title: String,
+    val isPermanent: Boolean,
+    val totalSizeBytes: Long,
+    val chunks: List<CachedChunkFile>,
+    val codec: String
+) {
+    val displayName: String
+        get() = "$artist - $title"
+
+    val formattedSize: String
+        get() = when {
+            totalSizeBytes >= 1024 * 1024 -> "%.1f МБ".format(totalSizeBytes.toFloat() / (1024 * 1024))
+            totalSizeBytes >= 1024 -> "%.0f КБ".format(totalSizeBytes.toFloat() / 1024)
+            else -> "$totalSizeBytes Б"
+        }
+}
 
 data class DecryptResult(
     val success: Boolean,
@@ -41,89 +62,215 @@ data class DecryptResult(
 object YaMusicCacheDecryptor {
     private const val DESKTOP_SIGN_KEY = "kzqU4XhfCaY6B6JTHODeq5"
     private const val DESKTOP_CLIENT = "YandexMusicDesktopAppWindows/5.95.0"
-    private val FILE_INFO_CODECS = listOf("flac", "flac-mp4", "aac-mp4", "he-aac-mp4", "aac", "he-aac", "mp3")
 
-    fun getPotentialCacheDirs(context: Context): List<File> {
-        val dirs = mutableListOf<File>()
+    private data class TrackMeta(
+        val title: String,
+        val artist: String,
+        val isPermanent: Boolean
+    )
+
+    private data class ExoStreamMeta(
+        val trackId: String,
+        val codec: String,
+        val meta: TrackMeta?
+    )
+
+    fun scanCacheTracks(context: Context): List<CachedTrackGroup> {
+        val result = mutableListOf<CachedTrackGroup>()
         try {
-            dirs.add(File(context.cacheDir, "exo"))
-            dirs.add(File(context.cacheDir, "cache_control_http_cache"))
-            dirs.add(context.cacheDir)
-            context.externalCacheDir?.let { dirs.add(it) }
-            context.externalCacheDir?.let { dirs.add(File(it, "exo")) }
-
-            val extStorage = Environment.getExternalStorageDirectory()
-            dirs.add(File(extStorage, "Android/data/ru.yandex.music/cache"))
-            dirs.add(File(extStorage, "Android/data/ru.yandex.music/cache/exo"))
-            dirs.add(File(extStorage, "Android/data/ru.yandex.music/files"))
-            dirs.add(File(extStorage, "Android/data/ru.yandex.music/files/tracks"))
-            dirs.add(File(extStorage, "Android/media/ru.yandex.music"))
-        } catch (e: Throwable) {}
-        return dirs.filter { it.exists() && it.canRead() }
-    }
-
-    fun scanCacheFiles(context: Context, customDir: File? = null): List<CachedTrackItem> {
-        val searchDirs = if (customDir != null && customDir.exists()) listOf(customDir) else getPotentialCacheDirs(context)
-        val result = mutableListOf<CachedTrackItem>()
-        val seenPaths = mutableSetOf<String>()
-
-        fun walk(dir: File, depth: Int = 0) {
-            if (depth > 4) return
-            val files = dir.listFiles() ?: return
-            for (f in files) {
-                if (f.isDirectory) {
-                    walk(f, depth + 1)
-                } else if (f.isFile && f.length() > 100 * 1024) { // Files > 100 KB
-                    if (seenPaths.add(f.absolutePath)) {
-                        val name = f.name
-                        var estimatedId: String? = null
-
-                        // Try to find track ID in filename
-                        val m1 = Regex("(\\d{6,10})").find(name)
-                        if (m1 != null) {
-                            estimatedId = m1.groupValues[1]
-                        }
-
-                        // Try to read first few bytes for hints
-                        if (estimatedId == null) {
+            // 1. Scan SQLite databases for track metadata (ymusic.sqlite / userDb)
+            val trackMetadata = mutableMapOf<String, TrackMeta>()
+            val dbDir = File(context.applicationInfo.dataDir, "databases")
+            if (dbDir.exists()) {
+                val dbFiles = dbDir.listFiles() ?: emptyArray()
+                for (dbFile in dbFiles) {
+                    if (dbFile.isFile && (dbFile.name.startsWith("ymusic.sqlite") || dbFile.name.startsWith("userDb"))) {
+                        try {
+                            val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
                             try {
-                                val buf = ByteArray(1024)
-                                val read = FileInputStream(f).use { it.read(buf) }
-                                if (read > 0) {
-                                    val headerText = String(buf, 0, read, Charsets.ISO_8859_1)
-                                    val m2 = Regex("trackId=(\\d+)").find(headerText)
-                                    if (m2 != null) estimatedId = m2.groupValues[1]
+                                val cursor = db.rawQuery(
+                                    "SELECT real_id, name, artist_name, is_permanent FROM track_mview",
+                                    null
+                                )
+                                val idCol = cursor.getColumnIndex("real_id")
+                                val nameCol = cursor.getColumnIndex("name")
+                                val artistCol = cursor.getColumnIndex("artist_name")
+                                val permCol = cursor.getColumnIndex("is_permanent")
+                                while (cursor.moveToNext()) {
+                                    val rId = cursor.getString(idCol) ?: continue
+                                    val name = cursor.getString(nameCol) ?: "Unknown Title"
+                                    val rawArtist = cursor.getString(artistCol) ?: "Unknown Artist"
+                                    val cleanArtist = rawArtist.replace("#|", "").replace("#", ", ").trim()
+                                    val isPerm = cursor.getInt(permCol) == 1
+                                    trackMetadata[rId] = TrackMeta(name, cleanArtist.ifEmpty { "Unknown Artist" }, isPerm)
                                 }
-                            } catch (e: Throwable) {}
-                        }
-
-                        val displayName = if (estimatedId != null) "Трек #$estimatedId (${formatSize(f.length())})" else "${f.name} (${formatSize(f.length())})"
-                        result.add(CachedTrackItem(f, f.length(), estimatedId, displayName))
+                                cursor.close()
+                            } catch (e: Throwable) {
+                                // Fallback: try track table
+                                try {
+                                    val cursor = db.rawQuery("SELECT original_id, name, ugc_artist_name FROM track", null)
+                                    val idCol = cursor.getColumnIndex("original_id")
+                                    val nameCol = cursor.getColumnIndex("name")
+                                    val artCol = cursor.getColumnIndex("ugc_artist_name")
+                                    while (cursor.moveToNext()) {
+                                        val oId = cursor.getString(idCol) ?: continue
+                                        val name = cursor.getString(nameCol) ?: "Unknown Title"
+                                        val art = cursor.getString(artCol) ?: "Unknown Artist"
+                                        trackMetadata.putIfAbsent(oId, TrackMeta(name, art, false))
+                                    }
+                                    cursor.close()
+                                } catch (ignored: Throwable) {}
+                            }
+                            db.close()
+                        } catch (e: Throwable) {}
                     }
                 }
             }
+
+            // 2. Scan ExoPlayer databases for stream index (Exo ID -> trackId)
+            val exoStreams = mutableMapOf<Int, ExoStreamMeta>()
+            if (dbDir.exists()) {
+                val dbFiles = dbDir.listFiles() ?: emptyArray()
+                for (dbFile in dbFiles) {
+                    if (dbFile.isFile && (dbFile.name.startsWith("exo_music") || dbFile.name.startsWith("exoplayer"))) {
+                        try {
+                            val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+                            val tablesCursor = db.rawQuery(
+                                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'ExoPlayerCacheIndex%'",
+                                null
+                            )
+                            val tableNames = mutableListOf<String>()
+                            while (tablesCursor.moveToNext()) {
+                                tableNames.add(tablesCursor.getString(0))
+                            }
+                            tablesCursor.close()
+
+                            for (tbl in tableNames) {
+                                val c = db.rawQuery("SELECT id, key FROM $tbl", null)
+                                while (c.moveToNext()) {
+                                    val exoId = c.getInt(0)
+                                    val key = c.getString(1) ?: continue
+                                    val m = Regex("""\.(\d{6,10})/""").find(key)
+                                        ?: Regex("""trackId=(\d+)""").find(key)
+                                        ?: Regex("""/(\d{6,10})/""").find(key)
+                                        ?: Regex("""\.(\d{6,10})\.""").find(key)
+                                    val tId = m?.groupValues?.get(1)
+                                    if (tId != null) {
+                                        val codec = when {
+                                            key.contains("flac") -> "flac"
+                                            key.contains("mp3") -> "mp3"
+                                            else -> "m4a"
+                                        }
+                                        val meta = trackMetadata[tId]
+                                        exoStreams[exoId] = ExoStreamMeta(tId, codec, meta)
+                                    }
+                                }
+                                c.close()
+                            }
+                            db.close()
+                        } catch (e: Throwable) {}
+                    }
+                }
+            }
+
+            // 3. Scan physical chunk files in music_cache folders
+            val musicCacheDirs = mutableListOf<File>()
+            val extFilesDir = context.getExternalFilesDirs(null)
+            for (efd in extFilesDir) {
+                if (efd != null && efd.exists()) {
+                    val p = efd.parentFile // user_XXXX
+                    if (p != null) {
+                        val mc = File(p, "music_cache")
+                        if (mc.exists()) musicCacheDirs.add(mc)
+                    }
+                }
+            }
+
+            val storage = Environment.getExternalStorageDirectory()
+            val yandexFilesRoot = File(storage, "Android/data/ru.yandex.music/files")
+            if (yandexFilesRoot.exists()) {
+                val userDirs = yandexFilesRoot.listFiles() ?: emptyArray()
+                for (ud in userDirs) {
+                    if (ud.isDirectory) {
+                        val mc = File(ud, "music_cache")
+                        if (mc.exists() && !musicCacheDirs.contains(mc)) {
+                            musicCacheDirs.add(mc)
+                        }
+                    }
+                }
+            }
+
+            // Group chunk files by Exo ID
+            val chunksByExoId = mutableMapOf<Int, MutableList<CachedChunkFile>>()
+            val chunkPattern = Regex("""^(\d+)\.(\d+)\.(\d+)\.v3\.exo$""")
+
+            for (mcDir in musicCacheDirs) {
+                val subDirs = mcDir.listFiles() ?: emptyArray()
+                for (sd in subDirs) {
+                    if (sd.isDirectory) {
+                        val chunkFiles = sd.listFiles() ?: emptyArray()
+                        for (cf in chunkFiles) {
+                            val match = chunkPattern.find(cf.name)
+                            if (match != null) {
+                                val exoId = match.groupValues[1].toIntOrNull() ?: continue
+                                val offset = match.groupValues[2].toLongOrNull() ?: 0L
+                                val list = chunksByExoId.getOrPut(exoId) { mutableListOf() }
+                                list.add(CachedChunkFile(cf, offset, cf.length()))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Assemble clean CachedTrackGroup items
+            for ((exoId, chunkList) in chunksByExoId) {
+                val streamInfo = exoStreams[exoId] ?: continue // Skip if not recognized as track stream
+                chunkList.sortBy { it.offset }
+                val totalSize = chunkList.sumOf { it.length }
+                if (totalSize < 100 * 1024) continue // Skip tiny fragments < 100KB
+
+                val meta = streamInfo.meta
+                val title = meta?.title ?: "Трек #${streamInfo.trackId}"
+                val artist = meta?.artist ?: "Yandex Music"
+                val isPerm = meta?.isPermanent ?: false
+
+                result.add(
+                    CachedTrackGroup(
+                        exoId = exoId,
+                        trackId = streamInfo.trackId,
+                        artist = artist,
+                        title = title,
+                        isPermanent = isPerm,
+                        totalSizeBytes = totalSize,
+                        chunks = chunkList,
+                        codec = streamInfo.codec
+                    )
+                )
+            }
+
+        } catch (e: Throwable) {
+            android.util.Log.e("YaMusicLsposed", "scanCacheTracks error: ${e.message}")
         }
 
-        for (dir in searchDirs) {
-            walk(dir)
-        }
-        return result.sortedByDescending { it.sizeBytes }
+        // Return sorted: offline saved first, then alphabetical by artist/title
+        return result.sortedWith(
+            compareByDescending<CachedTrackGroup> { it.isPermanent }
+                .thenBy { it.artist.lowercase() }
+                .thenBy { it.title.lowercase() }
+        )
     }
 
-    private fun formatSize(bytes: Long): String {
-        return when {
-            bytes >= 1024 * 1024 -> "%.1f МБ".format(bytes.toFloat() / (1024 * 1024))
-            bytes >= 1024 -> "%.0f КБ".format(bytes.toFloat() / 1024)
-            else -> "$bytes Б"
-        }
-    }
-
-    fun fetchKeyAndCodecFromApi(trackId: String, token: String): Pair<String, String>? {
+    fun fetchKeyAndCodecFromApi(trackId: String, token: String, preferredCodec: String = "aac-mp4"): Pair<String, String>? {
         return try {
             val timestamp = (System.currentTimeMillis() / 1000).toInt()
             val transport = "encraw"
-            val quality = "lossless"
-            val codecsStr = FILE_INFO_CODECS.joinToString("")
+            val quality = if (preferredCodec.contains("flac")) "lossless" else "hq"
+            val codecs = if (preferredCodec.contains("flac")) {
+                listOf("flac-mp4", "flac")
+            } else {
+                listOf("aac-mp4", "aac", "mp3")
+            }
+            val codecsStr = codecs.joinToString("")
             val message = "$timestamp$trackId$quality$codecsStr$transport"
 
             val mac = Mac.getInstance("HmacSHA256")
@@ -131,7 +278,7 @@ object YaMusicCacheDecryptor {
             val signBytes = mac.doFinal(message.toByteArray(Charsets.UTF_8))
             val rawSign = android.util.Base64.encodeToString(signBytes, android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING).trimEnd('=')
 
-            val query = "ts=$timestamp&trackId=$trackId&quality=$quality&codecs=${FILE_INFO_CODECS.joinToString(",")}&transports=$transport&sign=${URLEncoder.encode(rawSign, "UTF-8")}"
+            val query = "ts=$timestamp&trackId=$trackId&quality=$quality&codecs=${codecs.joinToString(",")}&transports=$transport&sign=${URLEncoder.encode(rawSign, "UTF-8")}"
             val url = URL("https://api.music.yandex.net/get-file-info?$query")
             val conn = url.openConnection() as HttpURLConnection
             conn.connectTimeout = 8000
@@ -150,122 +297,35 @@ object YaMusicCacheDecryptor {
                 } else null
             } else null
         } catch (e: Throwable) {
-            android.util.Log.e("YaMusicCacheDecryptor", "Error fetching key: ${e.message}")
+            android.util.Log.e("YaMusicLsposed", "fetchKey error: ${e.message}")
             null
         }
     }
 
-    fun hexToBytes(hex: String): ByteArray {
-        val len = hex.length
-        val data = ByteArray(len / 2)
-        for (i in 0 until len step 2) {
-            data[i / 2] = ((Character.digit(hex[i], 16) shl 4) + Character.digit(hex[i + 1], 16)).toByte()
-        }
-        return data
-    }
-
-    fun decryptFile(
-        inputFile: File,
-        outputFile: File,
-        keyHex: String,
-        onProgress: (Float) -> Unit = {}
-    ): Boolean {
-        return try {
-            val keyBytes = hexToBytes(keyHex)
-            val keySpec = SecretKeySpec(keyBytes, "AES")
-            val ivSpec = IvParameterSpec(ByteArray(16)) // 16-byte zero IV
-
-            val cipher = Cipher.getInstance("AES/CTR/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
-
-            val totalBytes = inputFile.length()
-            var processed = 0L
-
-            FileInputStream(inputFile).use { fis ->
-                CipherInputStream(fis, cipher).use { cis ->
-                    FileOutputStream(outputFile).use { fos ->
-                        val buffer = ByteArray(32768)
-                        var bytesRead: Int
-                        var lastReport = System.currentTimeMillis()
-                        while (cis.read(buffer).also { bytesRead = it } != -1) {
-                            fos.write(buffer, 0, bytesRead)
-                            processed += bytesRead
-                            val now = System.currentTimeMillis()
-                            if (totalBytes > 0 && (now - lastReport > 200 || processed == totalBytes)) {
-                                lastReport = now
-                                onProgress((processed.toFloat() / totalBytes) * 100f)
-                            }
-                        }
-                    }
-                }
-            }
-            outputFile.exists() && outputFile.length() > 0
-        } catch (e: Throwable) {
-            android.util.Log.e("YaMusicCacheDecryptor", "Decryption failed: ${e.message}")
-            outputFile.delete()
-            false
-        }
-    }
-
-    fun extractFlacFromMp4(mp4Bytes: ByteArray): ByteArray? {
-        try {
-            val dflaPos = indexOf(mp4Bytes, "dfLa".toByteArray(Charsets.ISO_8859_1))
-            val mdatPos = indexOf(mp4Bytes, "mdat".toByteArray(Charsets.ISO_8859_1))
-            if (dflaPos != -1 && mdatPos != -1) {
-                val dflaSize = ByteBuffer.wrap(mp4Bytes, dflaPos - 4, 4).order(ByteOrder.BIG_ENDIAN).int
-                val flacMeta = mp4Bytes.copyOfRange(dflaPos + 8, dflaPos - 4 + dflaSize)
-                val rawAudio = mp4Bytes.copyOfRange(mdatPos + 4, mp4Bytes.size)
-
-                val out = ByteArray(4 + flacMeta.size + rawAudio.size)
-                System.arraycopy("fLaC".toByteArray(Charsets.ISO_8859_1), 0, out, 0, 4)
-                System.arraycopy(flacMeta, 0, out, 4, flacMeta.size)
-                System.arraycopy(rawAudio, 0, out, 4 + flacMeta.size, rawAudio.size)
-                return out
-            }
-        } catch (e: Throwable) {
-            android.util.Log.e("YaMusicCacheDecryptor", "FLAC extract error: ${e.message}")
-        }
-        return null
-    }
-
-    private fun indexOf(data: ByteArray, target: ByteArray): Int {
-        if (target.isEmpty() || data.size < target.size) return -1
-        outer@ for (i in 0..data.size - target.size) {
-            for (j in target.indices) {
-                if (data[i + j] != target[j]) continue@outer
-            }
-            return i
-        }
-        return -1
-    }
-
-    fun decryptAndExport(
+    fun decryptAndExportTrackGroup(
         context: Context,
-        cacheFile: File,
-        trackId: String,
+        group: CachedTrackGroup,
         token: String,
         targetDir: File,
         onProgress: (Float) -> Unit
     ): DecryptResult {
-        if (!cacheFile.exists() || cacheFile.length() == 0L) {
-            return DecryptResult(false, "Файл кэша не найден или пуст")
+        if (group.chunks.isEmpty()) {
+            return DecryptResult(false, "Нет фрагментов кэша для трека")
         }
 
-        // 1. Get Key and Codec from API
+        // 1. Fetch decryption key from API
         onProgress(5f)
-        val keyInfo = fetchKeyAndCodecFromApi(trackId, token)
+        val keyInfo = fetchKeyAndCodecFromApi(group.trackId, token, group.codec)
         if (keyInfo == null) {
-            return DecryptResult(false, "Не удалось получить ключ дешифрования для трека $trackId. Проверьте токен.")
+            return DecryptResult(false, "Не удалось получить ключ дешифрования для трека ${group.trackId}")
         }
-        val (keyHex, codec) = keyInfo
+        val (keyHex, apiCodec) = keyInfo
 
-        // 2. Fetch track metadata
+        // 2. Fetch track info for cover art
         onProgress(15f)
-        var title = "Track $trackId"
-        var artist = "Unknown Artist"
         var coverUrl: String? = null
         try {
-            val trackUrl = URL("https://api.music.yandex.net/tracks/$trackId")
+            val trackUrl = URL("https://api.music.yandex.net/tracks/${group.trackId}")
             val conn = trackUrl.openConnection() as HttpURLConnection
             conn.connectTimeout = 6000
             conn.setRequestProperty("Authorization", "OAuth $token")
@@ -274,17 +334,6 @@ object YaMusicCacheDecryptor {
                 val arr = json.optJSONArray("result")
                 if (arr != null && arr.length() > 0) {
                     val tr = arr.getJSONObject(0)
-                    val tTitle = tr.optString("title", title)
-                    val tVer = tr.optString("version", "")
-                    title = if (tVer.isNotEmpty()) "$tTitle ($tVer)" else tTitle
-
-                    val artArr = tr.optJSONArray("artists")
-                    if (artArr != null && artArr.length() > 0) {
-                        val names = mutableListOf<String>()
-                        for (i in 0 until artArr.length()) names.add(artArr.getJSONObject(i).optString("name", ""))
-                        artist = names.joinToString(", ")
-                    }
-
                     val albums = tr.optJSONArray("albums")
                     if (albums != null && albums.length() > 0) {
                         val cUri = albums.getJSONObject(0).optString("coverUri", "")
@@ -294,82 +343,179 @@ object YaMusicCacheDecryptor {
             }
         } catch (e: Throwable) {}
 
-        val cleanTitle = sanitizeFileName(title).ifEmpty { "Track $trackId" }
-        val cleanArtist = sanitizeFileName(artist).ifEmpty { "Unknown Artist" }
-
-        // 3. Decrypt into temp file
-        val tempDecrypted = File(context.cacheDir, "dec_${System.currentTimeMillis()}.tmp")
-        val decryptedOk = decryptFile(cacheFile, tempDecrypted, keyHex) { p ->
-            onProgress(20f + (p * 0.6f))
-        }
-
-        if (!decryptedOk || !tempDecrypted.exists() || tempDecrypted.length() == 0L) {
-            tempDecrypted.delete()
-            return DecryptResult(false, "Ошибка дешифрования данных AES-128-CTR")
-        }
-
-        onProgress(85f)
-        if (!targetDir.exists()) targetDir.mkdirs()
-
-        // 4. Determine format and tag
-        var extension = when {
-            codec.contains("flac") -> "flac"
-            codec.contains("aac") || codec.contains("mp4") -> "m4a"
-            else -> "mp3"
-        }
-
-        val outFile = File(targetDir, "$cleanArtist - $cleanTitle.$extension")
-
+        // 3. Decrypt concatenated chunks into temporary file
+        val tempDecrypted = File(context.cacheDir, "dec_${System.currentTimeMillis()}_${group.trackId}.tmp")
         try {
-            if (codec.contains("flac")) {
-                val bytes = tempDecrypted.readBytes()
-                val pureFlac = extractFlacFromMp4(bytes)
+            val keyBytes = hexToBytes(keyHex)
+            val cipher = Cipher.getInstance("AES/CTR/NoPadding")
+            val iv = IvParameterSpec(ByteArray(16))
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), iv)
+
+            val sortedChunks = group.chunks.sortedBy { it.offset }
+            val inputStreams = sortedChunks.map { FileInputStream(it.file) }
+            val sequenceInputStream = SequenceInputStream(Collections.enumeration(inputStreams))
+
+            val totalBytes = group.totalSizeBytes
+            var totalRead = 0L
+
+            sequenceInputStream.use { seqIn ->
+                CipherInputStream(seqIn, cipher).use { cipherIn ->
+                    tempDecrypted.outputStream().use { out ->
+                        val buffer = ByteArray(32768)
+                        var bytesRead: Int
+                        var lastReportTime = System.currentTimeMillis()
+                        while (cipherIn.read(buffer).also { bytesRead = it } != -1) {
+                            out.write(buffer, 0, bytesRead)
+                            totalRead += bytesRead
+                            val now = System.currentTimeMillis()
+                            if (totalBytes > 0 && (now - lastReportTime > 200 || totalRead >= totalBytes)) {
+                                lastReportTime = now
+                                val p = 20f + ((totalRead.toFloat() / totalBytes) * 60f)
+                                onProgress(p.coerceAtMost(80f))
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!tempDecrypted.exists() || tempDecrypted.length() == 0L) {
+                tempDecrypted.delete()
+                return DecryptResult(false, "Ошибка дешифрования данных AES-128-CTR")
+            }
+
+            onProgress(85f)
+            if (!targetDir.exists()) targetDir.mkdirs()
+
+            // 4. Determine format and tag
+            val cleanTitle = sanitizeFileName(group.title).ifEmpty { "Track ${group.trackId}" }
+            val cleanArtist = sanitizeFileName(group.artist).ifEmpty { "Unknown Artist" }
+
+            val effectiveCodec = if (apiCodec.contains("flac") || group.codec.contains("flac")) "flac" else "m4a"
+            val extension = when (effectiveCodec) {
+                "flac" -> "flac"
+                else -> "m4a"
+            }
+
+            val outFile = File(targetDir, "$cleanArtist - $cleanTitle.$extension")
+
+            if (effectiveCodec == "flac") {
+                val rawBytes = tempDecrypted.readBytes()
+                val pureFlac = extractFlacFromMp4(rawBytes)
                 if (pureFlac != null) {
                     outFile.writeBytes(pureFlac)
                 } else {
                     tempDecrypted.copyTo(outFile, overwrite = true)
                 }
-            } else if (extension == "mp3") {
-                try {
-                    val mp3 = Mp3File(tempDecrypted.absolutePath)
-                    val tag = if (mp3.hasId3v2Tag()) mp3.id3v2Tag else ID3v24Tag()
-                    tag.artist = artist
-                    tag.title = title
-                    if (coverUrl != null) {
-                        try {
-                            val cConn = URL(coverUrl).openConnection() as HttpURLConnection
-                            tag.setAlbumImage(cConn.inputStream.readBytes(), "image/jpeg")
-                        } catch (e: Throwable) {}
-                    }
-                    mp3.id3v2Tag = tag
-                    val tagged = File(context.cacheDir, "tagged_${System.currentTimeMillis()}.mp3")
-                    mp3.save(tagged.absolutePath)
-                    tagged.copyTo(outFile, overwrite = true)
-                    tagged.delete()
-                } catch (e: Throwable) {
-                    // Fallback to raw copy if tagging fails
-                    tempDecrypted.copyTo(outFile, overwrite = true)
-                }
             } else {
                 tempDecrypted.copyTo(outFile, overwrite = true)
             }
+
+            // 5. MediaScanner notification
+            try {
+                MediaScannerConnection.scanFile(context, arrayOf(outFile.absolutePath), null, null)
+                val intent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply { data = Uri.fromFile(outFile) }
+                context.sendBroadcast(intent)
+            } catch (e: Throwable) {}
+
+            onProgress(100f)
+            return if (outFile.exists() && outFile.length() > 0) {
+                DecryptResult(true, "Успешно: ${outFile.name}", outFile)
+            } else {
+                DecryptResult(false, "Не удалось записать файл")
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("YaMusicLsposed", "Decryption error: ${e.message}")
+            return DecryptResult(false, "Ошибка: ${e.message}")
         } finally {
             tempDecrypted.delete()
         }
+    }
 
-        // 5. MediaScanner notification
+    fun extractFlacFromMp4(bytes: ByteArray): ByteArray? {
         try {
-            MediaScannerConnection.scanFile(context, arrayOf(outFile.absolutePath), null, null)
-            val intent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply { data = Uri.fromFile(outFile) }
-            context.sendBroadcast(intent)
-        } catch (e: Throwable) {}
+            val bb = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+            var dflaBytes: ByteArray? = null
+            var mdatBytes: ByteArray? = null
 
-        onProgress(100f)
-        return if (outFile.exists() && outFile.length() > 0) {
-            DecryptResult(true, "Успешно экспортировано: ${outFile.name}", outFile)
-        } else {
-            DecryptResult(false, "Не удалось записать файл на накопитель")
+            while (bb.remaining() >= 8) {
+                val boxStart = bb.position()
+                val boxSize = bb.getInt().toLong() and 0xFFFFFFFFL
+                val boxType = ByteArray(4)
+                bb.get(boxType)
+                val typeStr = String(boxType, Charsets.US_ASCII)
+
+                val payloadSize = if (boxSize == 1L) {
+                    if (bb.remaining() < 8) break
+                    bb.getLong() - 16
+                } else if (boxSize == 0L) {
+                    bb.remaining().toLong()
+                } else {
+                    boxSize - 8
+                }
+
+                if (typeStr == "moov") {
+                    val moovEnd = boxStart + (if (boxSize == 1L) payloadSize + 16 else boxSize)
+                    while (bb.position() < moovEnd && bb.remaining() >= 8) {
+                        val subStart = bb.position()
+                        val subSize = bb.getInt().toLong() and 0xFFFFFFFFL
+                        val subType = ByteArray(4)
+                        bb.get(subType)
+                        val subTypeStr = String(subType, Charsets.US_ASCII)
+
+                        if (subTypeStr == "dfLa") {
+                            bb.position(subStart + 12)
+                            val dflaLen = (subSize - 12).toInt()
+                            if (dflaLen > 0 && dflaLen <= bb.remaining()) {
+                                dflaBytes = ByteArray(dflaLen)
+                                bb.get(dflaBytes)
+                            }
+                            break
+                        } else if (subTypeStr in listOf("trak", "mdia", "minf", "stbl", "stsd", "fLaC")) {
+                            continue
+                        } else {
+                            val nextPos = subStart + subSize
+                            if (nextPos > moovEnd || subSize <= 0) break
+                            bb.position(nextPos.toInt())
+                        }
+                    }
+                    bb.position(moovEnd.toInt().coerceAtMost(bytes.size))
+                } else if (typeStr == "mdat") {
+                    val mdatLen = payloadSize.toInt()
+                    if (mdatLen in 1..bb.remaining()) {
+                        mdatBytes = ByteArray(mdatLen)
+                        bb.get(mdatBytes)
+                    }
+                    val nextPos = boxStart + (if (boxSize == 1L) payloadSize + 16 else boxSize)
+                    bb.position(nextPos.toInt().coerceAtMost(bytes.size))
+                } else {
+                    val nextPos = boxStart + (if (boxSize == 1L) payloadSize + 16 else boxSize)
+                    if (nextPos <= boxStart || nextPos > bytes.size) break
+                    bb.position(nextPos.toInt())
+                }
+            }
+
+            if (dflaBytes != null && mdatBytes != null) {
+                val fLaCHeader = "fLaC".toByteArray(Charsets.US_ASCII)
+                val out = ByteArray(fLaCHeader.size + dflaBytes.size + mdatBytes.size)
+                System.arraycopy(fLaCHeader, 0, out, 0, fLaCHeader.size)
+                System.arraycopy(dflaBytes, 0, out, fLaCHeader.size, dflaBytes.size)
+                System.arraycopy(mdatBytes, 0, out, fLaCHeader.size + dflaBytes.size, mdatBytes.size)
+                return out
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("YaMusicLsposed", "extractFlacFromMp4 error: ${e.message}")
         }
+        return null
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val cleanHex = hex.trim()
+        val result = ByteArray(cleanHex.length / 2)
+        for (i in result.indices) {
+            val index = i * 2
+            result[i] = cleanHex.substring(index, index + 2).toInt(16).toByte()
+        }
+        return result
     }
 
     private fun sanitizeFileName(name: String): String {
