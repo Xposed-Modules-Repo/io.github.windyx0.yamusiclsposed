@@ -1786,6 +1786,13 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                             streamDownloadUrl = direct.url
                             targetExt = "m4a"
                         }
+                    } else if (config.audioFormat.equals("MP3", ignoreCase = true)) {
+                        val targetQualityStr = if (targetQuality == 320) "hq" else "standard"
+                        val direct = fetchStreamUrlDirectly(resolvedMediaId, token, targetQualityStr, listOf("mp3"))
+                        if (direct != null) {
+                            streamDownloadUrl = direct.url
+                            targetExt = "mp3"
+                        }
                     }
 
                     val effectiveUrl = streamDownloadUrl ?: finalDownloadUrl
@@ -1891,7 +1898,11 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 try {
                     val rawBytes = tempFile.readBytes()
                     val pureFlac = YaMusicCacheDecryptor.extractFlacFromMp4(rawBytes) ?: rawBytes
-                    val taggedFlac = YaMusicCacheDecryptor.tagFlacFile(pureFlac, title, artist, coverBytes)
+                    val taggedFlac = if (pureFlac.size >= 4 && pureFlac[0] == 0x66.toByte() && pureFlac[1] == 0x4C.toByte()) {
+                        YaMusicCacheDecryptor.tagFlacFile(pureFlac, title, artist, coverBytes)
+                    } else {
+                        YaMusicCacheDecryptor.tagM4aFile(rawBytes, title, artist, coverBytes)
+                    }
                     outFile.writeBytes(taggedFlac)
                 } catch (e: Throwable) {
                     tempFile.copyTo(outFile, overwrite = true)
@@ -1907,13 +1918,19 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
             } else if (targetExtension == "mp3") {
                 try {
                     val mp3file = Mp3File(tempFile.absolutePath)
-                    val id3v2Tag = if (mp3file.hasId3v2Tag()) mp3file.id3v2Tag else ID3v24Tag()
+                    val id3v2Tag = if (mp3file.hasId3v2Tag()) mp3file.id3v2Tag else com.mpatric.mp3agic.ID3v23Tag()
                     id3v2Tag.artist = artist
                     id3v2Tag.title = title
                     
-                    if (coverBytes != null) {
-                        id3v2Tag.setAlbumImage(coverBytes, "image/jpeg")
+                    if (coverBytes != null && coverBytes.isNotEmpty()) {
+                        val isPng = coverBytes.size > 8 && coverBytes[0] == 0x89.toByte() && coverBytes[1] == 0x50.toByte()
+                        id3v2Tag.setAlbumImage(coverBytes, if (isPng) "image/png" else "image/jpeg")
                     }
+                    
+                    val id3v1Tag = if (mp3file.hasId3v1Tag()) mp3file.id3v1Tag else com.mpatric.mp3agic.ID3v1Tag()
+                    id3v1Tag.artist = artist.take(30)
+                    id3v1Tag.title = title.take(30)
+                    mp3file.id3v1Tag = id3v1Tag
                     
                     mp3file.id3v2Tag = id3v2Tag
                     val taggedTempFile = File(activity.cacheDir, "tagged_${tempId}.mp3")
@@ -1987,6 +2004,13 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         if (direct != null) {
                             directDownloadUrl = direct.url
                             targetExt = "m4a"
+                        }
+                    } else if (audioFormat.equals("MP3", ignoreCase = true)) {
+                        val targetQualityStr = if (targetQuality == 320) "hq" else "standard"
+                        val direct = fetchStreamUrlDirectly(trackId, token, targetQualityStr, listOf("mp3"))
+                        if (direct != null) {
+                            directDownloadUrl = direct.url
+                            targetExt = "mp3"
                         }
                     }
 

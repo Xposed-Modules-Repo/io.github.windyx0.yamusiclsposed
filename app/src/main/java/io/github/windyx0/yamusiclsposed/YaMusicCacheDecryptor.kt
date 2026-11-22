@@ -400,9 +400,12 @@ object YaMusicCacheDecryptor {
             val cleanTitle = sanitizeFileName(group.title).ifEmpty { "Track ${group.trackId}" }
             val cleanArtist = sanitizeFileName(group.artist).ifEmpty { "Unknown Artist" }
 
-            val effectiveCodec = if (apiCodec.contains("flac") || group.codec.contains("flac")) "flac" else "m4a"
+            val effectiveCodec = if (apiCodec.contains("flac") || group.codec.contains("flac")) "flac"
+                                 else if (apiCodec.contains("mp3") || group.codec.contains("mp3")) "mp3"
+                                 else "m4a"
             val extension = when (effectiveCodec) {
                 "flac" -> "flac"
+                "mp3" -> "mp3"
                 else -> "m4a"
             }
 
@@ -411,8 +414,34 @@ object YaMusicCacheDecryptor {
             if (effectiveCodec == "flac") {
                 val rawBytes = tempDecrypted.readBytes()
                 val pureFlac = extractFlacFromMp4(rawBytes) ?: rawBytes
-                val taggedFlac = tagFlacFile(pureFlac, group.title, group.artist, coverBytes)
+                val taggedFlac = if (pureFlac.size >= 4 && pureFlac[0] == 0x66.toByte() && pureFlac[1] == 0x4C.toByte()) {
+                    tagFlacFile(pureFlac, group.title, group.artist, coverBytes)
+                } else {
+                    tagM4aFile(rawBytes, group.title, group.artist, coverBytes)
+                }
                 outFile.writeBytes(taggedFlac)
+            } else if (effectiveCodec == "mp3") {
+                try {
+                    val mp3file = Mp3File(tempDecrypted.absolutePath)
+                    val id3v2Tag = if (mp3file.hasId3v2Tag()) mp3file.id3v2Tag else com.mpatric.mp3agic.ID3v23Tag()
+                    id3v2Tag.artist = group.artist
+                    id3v2Tag.title = group.title
+                    if (coverBytes != null && coverBytes.isNotEmpty()) {
+                        val isPng = coverBytes.size > 8 && coverBytes[0] == 0x89.toByte() && coverBytes[1] == 0x50.toByte()
+                        id3v2Tag.setAlbumImage(coverBytes, if (isPng) "image/png" else "image/jpeg")
+                    }
+                    val id3v1Tag = if (mp3file.hasId3v1Tag()) mp3file.id3v1Tag else com.mpatric.mp3agic.ID3v1Tag()
+                    id3v1Tag.artist = group.artist.take(30)
+                    id3v1Tag.title = group.title.take(30)
+                    mp3file.id3v1Tag = id3v1Tag
+                    mp3file.id3v2Tag = id3v2Tag
+                    val taggedMp3 = File(context.cacheDir, "tagged_${System.currentTimeMillis()}.mp3")
+                    mp3file.save(taggedMp3.absolutePath)
+                    taggedMp3.copyTo(outFile, overwrite = true)
+                    taggedMp3.delete()
+                } catch (e: Throwable) {
+                    tempDecrypted.copyTo(outFile, overwrite = true)
+                }
             } else {
                 val rawBytes = tempDecrypted.readBytes()
                 val taggedM4a = tagM4aFile(rawBytes, group.title, group.artist, coverBytes)
@@ -493,7 +522,9 @@ object YaMusicCacheDecryptor {
             if (coverBytes != null && coverBytes.isNotEmpty()) {
                 val picStream = ByteArrayOutputStream()
                 picStream.write(intToBe(3)) // 3 = front cover
-                val mime = "image/jpeg".toByteArray(Charsets.US_ASCII)
+                val isPng = coverBytes.size > 8 && coverBytes[0] == 0x89.toByte() && coverBytes[1] == 0x50.toByte()
+                val mimeStr = if (isPng) "image/png" else "image/jpeg"
+                val mime = mimeStr.toByteArray(Charsets.US_ASCII)
                 picStream.write(intToBe(mime.size))
                 picStream.write(mime)
                 picStream.write(intToBe(0)) // description length 0
@@ -695,81 +726,174 @@ object YaMusicCacheDecryptor {
         )
     }
 
+    private fun findSequence(data: ByteArray, seq: ByteArray, startIndex: Int = 0): Int {
+        if (seq.isEmpty() || data.size - startIndex < seq.size) return -1
+        val max = data.size - seq.size
+        for (i in startIndex..max) {
+            var match = true
+            for (j in seq.indices) {
+                if (data[i + j] != seq[j]) {
+                    match = false
+                    break
+                }
+            }
+            if (match) return i
+        }
+        return -1
+    }
+
+    private fun getIntAt(data: ByteArray, offset: Int): Int {
+        return ((data[offset].toInt() and 0xFF) shl 24) or
+               ((data[offset + 1].toInt() and 0xFF) shl 16) or
+               ((data[offset + 2].toInt() and 0xFF) shl 8) or
+               (data[offset + 3].toInt() and 0xFF)
+    }
+
+    private fun getLongAt(data: ByteArray, offset: Int): Long {
+        var res = 0L
+        for (i in 0 until 8) {
+            res = (res shl 8) or (data[offset + i].toLong() and 0xFFL)
+        }
+        return res
+    }
+
     fun extractFlacFromMp4(bytes: ByteArray): ByteArray? {
         try {
-            val bb = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
-            var dflaBytes: ByteArray? = null
-            var mdatBytes: ByteArray? = null
+            if (bytes.size >= 4 && bytes[0] == 0x66.toByte() && bytes[1] == 0x4C.toByte() &&
+                bytes[2] == 0x61.toByte() && bytes[3] == 0x43.toByte()) {
+                return bytes
+            }
 
-            while (bb.remaining() >= 8) {
-                val boxStart = bb.position()
-                val boxSize = bb.getInt().toLong() and 0xFFFFFFFFL
-                val boxType = ByteArray(4)
-                bb.get(boxType)
-                val typeStr = String(boxType, Charsets.US_ASCII)
+            // 1. Locate dfLa box containing STREAMINFO
+            val dflaIdx = findSequence(bytes, "dfLa".toByteArray(Charsets.US_ASCII))
+            if (dflaIdx < 4) return null
+            val dflaSize = getIntAt(bytes, dflaIdx - 4)
+            if (dflaSize <= 8 || dflaIdx + dflaSize - 4 > bytes.size) return null
+            val dflaPayloadStart = dflaIdx + 8
+            val dflaPayloadEnd = dflaIdx - 4 + dflaSize
+            if (dflaPayloadStart >= dflaPayloadEnd) return null
 
-                val payloadSize = if (boxSize == 1L) {
-                    if (bb.remaining() < 8) break
-                    bb.getLong() - 16
-                } else if (boxSize == 0L) {
-                    bb.remaining().toLong()
-                } else {
-                    boxSize - 8
+            var mPos = dflaPayloadStart
+            var streamInfoPayload: ByteArray? = null
+            while (mPos + 4 <= dflaPayloadEnd) {
+                val bHdr = bytes[mPos].toInt() and 0xFF
+                val isLast = (bHdr and 0x80) != 0
+                val bType = bHdr and 0x7F
+                val bLen = ((bytes[mPos + 1].toInt() and 0xFF) shl 16) or
+                           ((bytes[mPos + 2].toInt() and 0xFF) shl 8) or
+                           (bytes[mPos + 3].toInt() and 0xFF)
+                if (mPos + 4 + bLen > dflaPayloadEnd) break
+                if (bType == 0 && bLen >= 34) {
+                    streamInfoPayload = bytes.copyOfRange(mPos + 4, mPos + 4 + bLen)
+                    break
                 }
+                mPos += 4 + bLen
+                if (isLast) break
+            }
+            if (streamInfoPayload == null) return null
 
-                if (typeStr == "moov") {
-                    val moovEnd = boxStart + (if (boxSize == 1L) payloadSize + 16 else boxSize)
-                    while (bb.position() < moovEnd && bb.remaining() >= 8) {
-                        val subStart = bb.position()
-                        val subSize = bb.getInt().toLong() and 0xFFFFFFFFL
-                        val subType = ByteArray(4)
-                        bb.get(subType)
-                        val subTypeStr = String(subType, Charsets.US_ASCII)
+            // 2. Locate stsz (sample sizes)
+            val stszIdx = findSequence(bytes, "stsz".toByteArray(Charsets.US_ASCII))
+            if (stszIdx < 0 || stszIdx + 16 > bytes.size) return null
+            val defaultSampleSize = getIntAt(bytes, stszIdx + 8)
+            val sampleCount = getIntAt(bytes, stszIdx + 12)
+            if (sampleCount <= 0) return null
 
-                        if (subTypeStr == "dfLa") {
-                            bb.position(subStart + 12)
-                            val dflaLen = (subSize - 12).toInt()
-                            if (dflaLen > 0 && dflaLen <= bb.remaining()) {
-                                dflaBytes = ByteArray(dflaLen)
-                                bb.get(dflaBytes)
-                            }
-                            break
-                        } else if (subTypeStr in listOf("trak", "mdia", "minf", "stbl", "stsd", "fLaC")) {
-                            continue
-                        } else {
-                            val nextPos = subStart + subSize
-                            if (nextPos > moovEnd || subSize <= 0) break
-                            bb.position(nextPos.toInt())
-                        }
-                    }
-                    bb.position(moovEnd.toInt().coerceAtMost(bytes.size))
-                } else if (typeStr == "mdat") {
-                    val mdatLen = payloadSize.toInt()
-                    if (mdatLen in 1..bb.remaining()) {
-                        mdatBytes = ByteArray(mdatLen)
-                        bb.get(mdatBytes)
-                    }
-                    val nextPos = boxStart + (if (boxSize == 1L) payloadSize + 16 else boxSize)
-                    bb.position(nextPos.toInt().coerceAtMost(bytes.size))
-                } else {
-                    val nextPos = boxStart + (if (boxSize == 1L) payloadSize + 16 else boxSize)
-                    if (nextPos <= boxStart || nextPos > bytes.size) break
-                    bb.position(nextPos.toInt())
+            val sampleSizes = IntArray(sampleCount)
+            if (defaultSampleSize > 0) {
+                sampleSizes.fill(defaultSampleSize)
+            } else {
+                var sPos = stszIdx + 16
+                for (i in 0 until sampleCount) {
+                    if (sPos + 4 > bytes.size) return null
+                    sampleSizes[i] = getIntAt(bytes, sPos)
+                    sPos += 4
                 }
             }
 
-            if (dflaBytes != null && mdatBytes != null) {
-                val fLaCHeader = "fLaC".toByteArray(Charsets.US_ASCII)
-                val out = ByteArray(fLaCHeader.size + dflaBytes.size + mdatBytes.size)
-                System.arraycopy(fLaCHeader, 0, out, 0, fLaCHeader.size)
-                System.arraycopy(dflaBytes, 0, out, fLaCHeader.size, dflaBytes.size)
-                System.arraycopy(mdatBytes, 0, out, fLaCHeader.size + dflaBytes.size, mdatBytes.size)
-                return out
+            // 3. Locate stsc (sample to chunk)
+            val stscIdx = findSequence(bytes, "stsc".toByteArray(Charsets.US_ASCII))
+            if (stscIdx < 0 || stscIdx + 12 > bytes.size) return null
+            val stscCount = getIntAt(bytes, stscIdx + 8)
+            data class StscEntry(val firstChunk: Int, val samplesPerChunk: Int)
+            val stscEntries = mutableListOf<StscEntry>()
+            var scPos = stscIdx + 12
+            for (i in 0 until stscCount) {
+                if (scPos + 12 > bytes.size) break
+                val fChunk = getIntAt(bytes, scPos)
+                val spc = getIntAt(bytes, scPos + 4)
+                stscEntries.add(StscEntry(fChunk, spc))
+                scPos += 12
             }
+            if (stscEntries.isEmpty()) return null
+
+            // 4. Locate stco or co64 (chunk offsets)
+            val stcoIdx = findSequence(bytes, "stco".toByteArray(Charsets.US_ASCII))
+            val isCo64 = (stcoIdx < 0)
+            val chunkOffsets = mutableListOf<Long>()
+            if (!isCo64) {
+                val chunkCount = getIntAt(bytes, stcoIdx + 8)
+                var cPos = stcoIdx + 12
+                for (i in 0 until chunkCount) {
+                    if (cPos + 4 > bytes.size) break
+                    chunkOffsets.add(getIntAt(bytes, cPos).toLong() and 0xFFFFFFFFL)
+                    cPos += 4
+                }
+            } else {
+                val co64Idx = findSequence(bytes, "co64".toByteArray(Charsets.US_ASCII))
+                if (co64Idx < 0 || co64Idx + 12 > bytes.size) return null
+                val chunkCount = getIntAt(bytes, co64Idx + 8)
+                var cPos = co64Idx + 12
+                for (i in 0 until chunkCount) {
+                    if (cPos + 8 > bytes.size) break
+                    chunkOffsets.add(getLongAt(bytes, cPos))
+                    cPos += 8
+                }
+            }
+            if (chunkOffsets.isEmpty()) return null
+
+            // 5. Map sample offsets and copy audio frames
+            var totalAudioBytes = 0
+            for (sz in sampleSizes) totalAudioBytes += sz
+            val audioBytes = ByteArray(totalAudioBytes)
+            var audioDestPos = 0
+            var sIdx = 0
+
+            for (cIdx in chunkOffsets.indices) {
+                val chunkNum = cIdx + 1
+                var spc = stscEntries[0].samplesPerChunk
+                for (entry in stscEntries) {
+                    if (chunkNum >= entry.firstChunk) {
+                        spc = entry.samplesPerChunk
+                    }
+                }
+                var currentOffset = chunkOffsets[cIdx]
+                for (j in 0 until spc) {
+                    if (sIdx >= sampleCount) break
+                    val sSize = sampleSizes[sIdx]
+                    if (currentOffset + sSize <= bytes.size.toLong()) {
+                        System.arraycopy(bytes, currentOffset.toInt(), audioBytes, audioDestPos, sSize)
+                        audioDestPos += sSize
+                    }
+                    currentOffset += sSize
+                    sIdx++
+                }
+            }
+
+            // 6. Build pure FLAC stream: "fLaC" + STREAMINFO block + audio frames
+            val outStream = ByteArrayOutputStream(4 + 4 + streamInfoPayload.size + audioDestPos)
+            outStream.write("fLaC".toByteArray(Charsets.US_ASCII))
+            outStream.write(0x80) // 0x80 = isLast, type = 0 (STREAMINFO)
+            outStream.write((streamInfoPayload.size ushr 16) and 0xFF)
+            outStream.write((streamInfoPayload.size ushr 8) and 0xFF)
+            outStream.write(streamInfoPayload.size and 0xFF)
+            outStream.write(streamInfoPayload)
+            outStream.write(audioBytes, 0, audioDestPos)
+            return outStream.toByteArray()
         } catch (e: Throwable) {
             android.util.Log.e("YaMusicLsposed", "extractFlacFromMp4 error: ${e.message}")
+            return null
         }
-        return null
     }
 
     private fun hexToBytes(hex: String): ByteArray {
