@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.app.Application
 import android.app.DownloadManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.media.MediaMetadata
@@ -47,7 +48,8 @@ data class Config(
     val folderType: String,
     val customFolder: String,
     val manualToken: String,
-    val updateChannel: String = "release"
+    val updateChannel: String = "release",
+    val audioFormat: String = "MP3" // "MP3", "FLAC", "M4A"
 )
 
 fun saveConfig(activity: Activity, config: Config) {
@@ -60,6 +62,7 @@ fun saveConfig(activity: Activity, config: Config) {
         .putString("custom_folder", config.customFolder)
         .putString("token", config.manualToken)
         .putString("update_channel", config.updateChannel)
+        .putString("audio_format", config.audioFormat)
         .commit()
 
     if (config.manualToken.isNotBlank()) {
@@ -85,7 +88,8 @@ fun loadConfig(activity: Activity): Config {
         folderType = prefs.getString("folder_type", "Music") ?: "Music",
         customFolder = prefs.getString("custom_folder", "") ?: "",
         manualToken = prefs.getString("token", "") ?: "",
-        updateChannel = prefs.getString("update_channel", "release") ?: "release"
+        updateChannel = prefs.getString("update_channel", "release") ?: "release",
+        audioFormat = prefs.getString("audio_format", "MP3") ?: "MP3"
     )
 }
 
@@ -172,6 +176,53 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 }
             }
             return false
+        }
+
+        private const val DESKTOP_SIGN_KEY = "kzqU4XhfCaY6B6JTHODeq5"
+        private const val DESKTOP_CLIENT = "YandexMusicDesktopAppWindows/5.95.0"
+        private val ALL_STREAM_CODECS = listOf("flac", "flac-mp4", "aac-mp4", "he-aac-mp4", "aac", "he-aac", "mp3")
+
+        data class DirectStreamResult(val url: String, val codec: String)
+
+        fun fetchStreamUrlDirectly(
+            trackId: String,
+            token: String,
+            quality: String,
+            codecs: List<String>
+        ): DirectStreamResult? {
+            return try {
+                val timestamp = (System.currentTimeMillis() / 1000).toInt()
+                val transport = "raw"
+                val codecsStr = codecs.joinToString("")
+                val message = "$timestamp$trackId$quality$codecsStr$transport"
+
+                val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+                mac.init(javax.crypto.spec.SecretKeySpec(DESKTOP_SIGN_KEY.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+                val signBytes = mac.doFinal(message.toByteArray(Charsets.UTF_8))
+                val rawSign = android.util.Base64.encodeToString(signBytes, android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING).trimEnd('=')
+
+                val query = "ts=$timestamp&trackId=$trackId&quality=$quality&codecs=${codecs.joinToString(",")}&transports=$transport&sign=${java.net.URLEncoder.encode(rawSign, "UTF-8")}"
+                val url = java.net.URL("https://api.music.yandex.net/get-file-info?$query")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.setRequestProperty("Authorization", "OAuth $token")
+                conn.setRequestProperty("X-Yandex-Music-Client", DESKTOP_CLIENT)
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+
+                if (conn.responseCode in 200..299) {
+                    val json = org.json.JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                    val dlInfo = json.optJSONObject("result")?.optJSONObject("downloadInfo")
+                    val streamUrl = dlInfo?.optString("url", "") ?: ""
+                    val codec = dlInfo?.optString("codec", "mp3") ?: "mp3"
+                    if (streamUrl.isNotEmpty()) {
+                        DirectStreamResult(streamUrl, codec)
+                    } else null
+                } else null
+            } catch (e: Throwable) {
+                android.util.Log.e("YaMusicLsposed", "fetchStreamUrlDirectly error: ${e.message}")
+                null
+            }
         }
 
         fun sanitizeFileName(name: String): String {
@@ -1494,64 +1545,53 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 if (shouldDownloadCover && currentAlbumArtUri != null) {
                     coverUrl = currentAlbumArtUri?.replace(Regex("\\d+x\\d+"), coverSize)
                 }
-                
-                // Проверяем буфер обмена на наличие ссылки от кнопки "Поделиться"
-                try {
-                    val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    if (clipboard.hasPrimaryClip()) {
-                        val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
-                        if (text.contains("music.yandex.ru/album/") && text.contains("/track/")) {
-                            val matcher = java.util.regex.Pattern.compile("track/(\\d+)").matcher(text)
-                            if (matcher.find()) {
-                                resolvedMediaId = matcher.group(1)
-                                activity.runOnUiThread { Toast.makeText(activity, "Загрузка по ссылке из буфера!", Toast.LENGTH_SHORT).show() }
-                            }
-                        }
-                    }
-                } catch (e: Throwable) {
-                    android.util.Log.e("YaMusicLsposed", "Clipboard read error - ${e.message}")
+
+                // 1. Direct ID from active playback takes highest priority!
+                val directCandidate = rawMediaId?.substringBefore(":")
+                if (directCandidate != null && directCandidate.length >= 6 && directCandidate.all { it.isDigit() }) {
+                    resolvedMediaId = directCandidate
                 }
-                if (resolvedMediaId == null) {
-                    // Extract Album ID from Cover Art URI and find the exact track!
-                    if (currentAlbumArtUri != null) {
-                        try {
-                            val matcher = java.util.regex.Pattern.compile("\\.a\\.(\\d+)-").matcher(currentAlbumArtUri!!)
-                            if (matcher.find()) {
-                                val albumId = matcher.group(1)
-                                val albumUrl = java.net.URL("https://api.music.yandex.net/albums/$albumId/with-tracks")
-                                val albumConn = albumUrl.openConnection() as java.net.HttpURLConnection
-                                albumConn.setRequestProperty("Authorization", "OAuth $token")
-                                
-                                val albumResponse = albumConn.inputStream.bufferedReader().use(java.io.BufferedReader::readText)
-                                val root = org.json.JSONObject(albumResponse)
-                                val result = root.optJSONObject("result")
-                                if (result != null) {
-                                    val volumes = result.optJSONArray("volumes")
-                                    if (volumes != null) {
-                                        var bestDiff = Long.MAX_VALUE
-                                        for (i in 0 until volumes.length()) {
-                                            val volume = volumes.optJSONArray(i) ?: continue
-                                            for (j in 0 until volume.length()) {
-                                                val trackObj = volume.optJSONObject(j) ?: continue
-                                                val tId = trackObj.optString("id")
-                                                val tDuration = trackObj.optLong("durationMs", 0L)
-                                                
-                                                val diff = Math.abs(tDuration - currentDuration)
-                                                if (diff < 3000 && diff < bestDiff) {
-                                                    bestDiff = diff
-                                                    resolvedMediaId = tId
-                                                }
+
+                // 2. Extract Album ID from Cover Art URI and find track by duration
+                if (resolvedMediaId == null && currentAlbumArtUri != null) {
+                    try {
+                        val matcher = java.util.regex.Pattern.compile("\\.a\\.(\\d+)-").matcher(currentAlbumArtUri!!)
+                        if (matcher.find()) {
+                            val albumId = matcher.group(1)
+                            val albumUrl = java.net.URL("https://api.music.yandex.net/albums/$albumId/with-tracks")
+                            val albumConn = albumUrl.openConnection() as java.net.HttpURLConnection
+                            albumConn.setRequestProperty("Authorization", "OAuth $token")
+                            
+                            val albumResponse = albumConn.inputStream.bufferedReader().use(java.io.BufferedReader::readText)
+                            val root = org.json.JSONObject(albumResponse)
+                            val result = root.optJSONObject("result")
+                            if (result != null) {
+                                val volumes = result.optJSONArray("volumes")
+                                if (volumes != null) {
+                                    var bestDiff = Long.MAX_VALUE
+                                    for (i in 0 until volumes.length()) {
+                                        val volume = volumes.optJSONArray(i) ?: continue
+                                        for (j in 0 until volume.length()) {
+                                            val trackObj = volume.optJSONObject(j) ?: continue
+                                            val tId = trackObj.optString("id")
+                                            val tDuration = trackObj.optLong("durationMs", 0L)
+                                            
+                                            val diff = Math.abs(tDuration - currentDuration)
+                                            if (diff < 3000 && diff < bestDiff) {
+                                                bestDiff = diff
+                                                resolvedMediaId = tId
                                             }
                                         }
                                     }
                                 }
                             }
-                        } catch (e: Throwable) {
-                            android.util.Log.e("YaMusicLsposed", "Album API error: ${e.message}")
                         }
+                    } catch (e: Throwable) {
+                        android.util.Log.e("YaMusicLsposed", "Album API error: ${e.message}")
                     }
                 }
                 
+                // 3. Search API by artist & title
                 if (resolvedMediaId == null) {
                     val searchQuery = java.net.URLEncoder.encode("$artist $title", "UTF-8")
                     val searchUrl = java.net.URL("https://api.music.yandex.net/search?text=$searchQuery&type=track&page=0")
@@ -1579,22 +1619,11 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 }
                                 
                                 var score = 0
-                                
                                 if (tTitle.equals(title, ignoreCase = true)) score += 20
                                 else if (tTitle.contains(title, ignoreCase = true) || title.contains(tTitle, ignoreCase = true)) score += 10
                                 
                                 if (tArtist.equals(artist, ignoreCase = true)) score += 20
                                 else if (tArtist.contains(artist, ignoreCase = true) || artist.contains(tArtist, ignoreCase = true)) score += 10
-                                
-                                if (tTitle.equals(artist, ignoreCase = true)) score += 20
-                                else if (tTitle.contains(artist, ignoreCase = true) || artist.contains(tTitle, ignoreCase = true)) score += 10
-                                
-                                if (tArtist.equals(title, ignoreCase = true)) score += 20
-                                else if (tArtist.contains(title, ignoreCase = true) || title.contains(tArtist, ignoreCase = true)) score += 10
-                                
-                                if (!title.contains("Speed Up", true) && tTitle.contains("Speed Up", true)) score -= 30
-                                if (!artist.contains("Speed Up", true) && tArtist.contains("Speed Up", true)) score -= 30
-                                if (!title.contains("Remix", true) && tTitle.contains("Remix", true)) score -= 30
                                 
                                 val trackDur = track.optLong("durationMs", 0L)
                                 if (currentDuration > 0L && Math.abs(trackDur - currentDuration) < 2500L) {
@@ -1618,12 +1647,22 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         android.util.Log.e("YaMusicLsposed", "JSON parse error - ${e.message}")
                     }
                 }
-                
+
+                // 4. Only if not playing and not resolved, check clipboard
                 if (resolvedMediaId == null) {
-                    var directTrackId = rawMediaId.substringBefore(":")
-                    if (directTrackId.length >= 7) {
-                        resolvedMediaId = directTrackId
-                    }
+                    try {
+                        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        if (clipboard.hasPrimaryClip()) {
+                            val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
+                            if (text.contains("music.yandex.ru/album/") && text.contains("/track/")) {
+                                val matcher = java.util.regex.Pattern.compile("track/(\\d+)").matcher(text)
+                                if (matcher.find()) {
+                                    resolvedMediaId = matcher.group(1)
+                                    activity.runOnUiThread { Toast.makeText(activity, "Загрузка по ссылке из буфера!", Toast.LENGTH_SHORT).show() }
+                                }
+                            }
+                        }
+                    } catch (e: Throwable) {}
                 }
 
                 if (resolvedMediaId == null) {
@@ -1732,17 +1771,50 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                     } catch (e: Throwable) {
                         android.util.Log.e("YaMusicLsposed", "Failed to fetch track info: ${e.message}")
                     }
+                    var streamDownloadUrl: String? = null
+                    var targetExt = "mp3"
+
+                    if (config.audioFormat.equals("FLAC", ignoreCase = true)) {
+                        val direct = fetchStreamUrlDirectly(resolvedMediaId, token, "lossless", ALL_STREAM_CODECS)
+                        if (direct != null) {
+                            streamDownloadUrl = direct.url
+                            targetExt = if (direct.codec.contains("flac")) "flac" else if (direct.codec.contains("mp4") || direct.codec.contains("aac")) "m4a" else "mp3"
+                        }
+                    } else if (config.audioFormat.equals("M4A", ignoreCase = true)) {
+                        val direct = fetchStreamUrlDirectly(resolvedMediaId, token, "hq", listOf("aac-mp4", "aac"))
+                        if (direct != null) {
+                            streamDownloadUrl = direct.url
+                            targetExt = "m4a"
+                        }
+                    }
+
+                    val effectiveUrl = streamDownloadUrl ?: finalDownloadUrl
+
                     initNotification(activity)
-                    downloadAndTagFile(activity, finalDownloadUrl, finalCoverUrl, finalArtist, finalTitle, downloadFolder) { progress ->
+                    val savedSuccess = downloadAndTagFile(
+                        activity = activity,
+                        audioUrl = effectiveUrl,
+                        coverUrl = finalCoverUrl,
+                        artist = finalArtist,
+                        title = finalTitle,
+                        downloadFolder = downloadFolder,
+                        targetExtension = targetExt
+                    ) { progress ->
                         notifyTrackProgress(1, progress, "Загрузка ${progress.toInt()}%")
                         updateNotification("Скачивание трека", "$finalArtist - $finalTitle", 100, progress.toInt(), false)
                     }
                     
-                    // Show Done state for 1 second
                     cancelNotification()
-                    notifyTrackProgress(2, 100f, "Готово!")
-                    Thread.sleep(1000)
-                    notifyTrackProgress(0, 0f, "")
+                    if (savedSuccess) {
+                        notifyTrackProgress(2, 100f, "Готово!")
+                        Thread.sleep(1000)
+                        notifyTrackProgress(0, 0f, "")
+                    } else {
+                        notifyTrackProgress(0, 0f, "Ошибка сохранения!")
+                        activity.runOnUiThread {
+                            Toast.makeText(activity, "Не удалось сохранить файл! Проверьте папку.", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 } else {
                     cancelNotification()
                     android.util.Log.e("YaMusicLsposed", "XML parse error")
@@ -1756,7 +1828,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     private fun downloadAndTagFile(
         activity: Activity,
-        mp3Url: String,
+        audioUrl: String,
         coverUrl: String?,
         artist: String,
         title: String,
@@ -1764,23 +1836,24 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         trackIndex: Int = 0,
         totalTracks: Int = 1,
         cancelCheck: (() -> Boolean)? = null,
+        targetExtension: String = "mp3",
         onProgress: (Float) -> Unit
-    ) {
+    ): Boolean {
         val cleanArtist = sanitizeFileName(artist).ifEmpty { "Unknown Artist" }
         val cleanTitle = sanitizeFileName(title).ifEmpty { "Unknown Title" }
-        val fileName = "$cleanArtist - $cleanTitle.mp3"
+        val fileName = "$cleanArtist - $cleanTitle.$targetExtension"
         val outDir = File(downloadFolder)
         if (!outDir.exists()) outDir.mkdirs()
         val outFile = File(outDir, fileName)
         val tempId = "${System.currentTimeMillis()}_${(1000..9999).random()}"
-        val tempFile = File(activity.cacheDir, "temp_${tempId}.mp3")
+        val tempFile = File(activity.cacheDir, "temp_${tempId}.$targetExtension")
         
         try {
-            val mp3Conn = URL(mp3Url).openConnection() as HttpURLConnection
-            val contentLength = mp3Conn.contentLength
-            mp3Conn.inputStream.use { input ->
+            val audioConn = URL(audioUrl).openConnection() as HttpURLConnection
+            val contentLength = audioConn.contentLength
+            audioConn.inputStream.use { input ->
                 tempFile.outputStream().use { output ->
-                    val buffer = ByteArray(8192)
+                    val buffer = ByteArray(32768)
                     var bytesRead: Int
                     var totalRead = 0L
                     var lastReportTime = System.currentTimeMillis()
@@ -1800,41 +1873,67 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 }
             }
             
-            val mp3file = Mp3File(tempFile.absolutePath)
-            val id3v2Tag = if (mp3file.hasId3v2Tag()) mp3file.id3v2Tag else ID3v24Tag()
-            id3v2Tag.artist = artist
-            id3v2Tag.title = title
-            
-            if (coverUrl != null) {
+            if (targetExtension == "flac") {
                 try {
-                    val coverConn = URL(coverUrl).openConnection() as HttpURLConnection
-                    val coverBytes = coverConn.inputStream.readBytes()
-                    id3v2Tag.setAlbumImage(coverBytes, "image/jpeg")
+                    val rawBytes = tempFile.readBytes()
+                    val pureFlac = YaMusicCacheDecryptor.extractFlacFromMp4(rawBytes)
+                    if (pureFlac != null) {
+                        outFile.writeBytes(pureFlac)
+                    } else {
+                        tempFile.copyTo(outFile, overwrite = true)
+                    }
                 } catch (e: Throwable) {
-                    android.util.Log.e("YaMusicLsposed", "Failed to download cover - ${e.message}")
+                    tempFile.copyTo(outFile, overwrite = true)
                 }
+            } else if (targetExtension == "mp3") {
+                try {
+                    val mp3file = Mp3File(tempFile.absolutePath)
+                    val id3v2Tag = if (mp3file.hasId3v2Tag()) mp3file.id3v2Tag else ID3v24Tag()
+                    id3v2Tag.artist = artist
+                    id3v2Tag.title = title
+                    
+                    if (coverUrl != null) {
+                        try {
+                            val coverConn = URL(coverUrl).openConnection() as HttpURLConnection
+                            val coverBytes = coverConn.inputStream.readBytes()
+                            id3v2Tag.setAlbumImage(coverBytes, "image/jpeg")
+                        } catch (e: Throwable) {
+                            android.util.Log.e("YaMusicLsposed", "Failed to download cover - ${e.message}")
+                        }
+                    }
+                    
+                    mp3file.id3v2Tag = id3v2Tag
+                    val taggedTempFile = File(activity.cacheDir, "tagged_${tempId}.mp3")
+                    mp3file.save(taggedTempFile.absolutePath)
+                    
+                    taggedTempFile.copyTo(outFile, overwrite = true)
+                    taggedTempFile.delete()
+                } catch (tagError: Throwable) {
+                    android.util.Log.e("YaMusicLsposed", "Tagging error, saving raw mp3: ${tagError.message}")
+                    tempFile.copyTo(outFile, overwrite = true)
+                }
+            } else {
+                tempFile.copyTo(outFile, overwrite = true)
             }
-            
-            mp3file.id3v2Tag = id3v2Tag
-            val taggedTempFile = File(activity.cacheDir, "tagged_${tempId}.mp3")
-            mp3file.save(taggedTempFile.absolutePath)
-            
-            taggedTempFile.copyTo(outFile, overwrite = true)
             tempFile.delete()
-            taggedTempFile.delete()
             
             try {
                 android.media.MediaScannerConnection.scanFile(activity, arrayOf(outFile.absolutePath), null, null)
+                val mediaScanIntent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply { data = Uri.fromFile(outFile) }
+                activity.sendBroadcast(mediaScanIntent)
             } catch (e: Throwable) {}
 
             val baseTime = System.currentTimeMillis()
             val timeOffset = (totalTracks - trackIndex) * 1000L
             outFile.setLastModified(baseTime + timeOffset)
+
+            return outFile.exists() && outFile.length() > 0
         } catch (e: Throwable) {
             android.util.Log.e("YaMusicLsposed", "Download error - ${e.stackTraceToString()}")
+            tempFile.delete()
+            return false
         }
     }
-
 
     private fun downloadTrackById(
         activity: Activity,
@@ -1848,6 +1947,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         trackIndex: Int = 0,
         totalTracks: Int = 1,
         cancelCheck: (() -> Boolean)? = null,
+        audioFormat: String = "MP3",
         onStateChange: (Int, Float) -> Unit,
         onSuccess: () -> Unit,
         onError: (() -> Unit)? = null
@@ -1859,6 +1959,50 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 attempts++
                 try {
                     if (cancelCheck?.invoke() == true) { onError?.invoke(); return@thread }
+
+                    var directDownloadUrl: String? = null
+                    var targetExt = "mp3"
+
+                    if (audioFormat.equals("FLAC", ignoreCase = true)) {
+                        val direct = fetchStreamUrlDirectly(trackId, token, "lossless", ALL_STREAM_CODECS)
+                        if (direct != null) {
+                            directDownloadUrl = direct.url
+                            targetExt = if (direct.codec.contains("flac")) "flac" else if (direct.codec.contains("mp4") || direct.codec.contains("aac")) "m4a" else "mp3"
+                        }
+                    } else if (audioFormat.equals("M4A", ignoreCase = true)) {
+                        val direct = fetchStreamUrlDirectly(trackId, token, "hq", listOf("aac-mp4", "aac"))
+                        if (direct != null) {
+                            directDownloadUrl = direct.url
+                            targetExt = "m4a"
+                        }
+                    }
+
+                    if (directDownloadUrl != null) {
+                        val ok = downloadAndTagFile(
+                            activity = activity,
+                            audioUrl = directDownloadUrl,
+                            coverUrl = coverUrl,
+                            artist = artist,
+                            title = title,
+                            downloadFolder = downloadFolder,
+                            trackIndex = trackIndex,
+                            totalTracks = totalTracks,
+                            cancelCheck = cancelCheck,
+                            targetExtension = targetExt
+                        ) { progress ->
+                            onStateChange(1, progress)
+                        }
+                        if (ok) {
+                            onStateChange(2, 100f)
+                            onSuccess()
+                            return@thread
+                        } else {
+                            if (attempts >= maxAttempts) {
+                                onError?.invoke()
+                                return@thread
+                            }
+                        }
+                    }
 
                     var downloadInfoUrlStr: String? = null
                     val infoUrl = java.net.URL("https://api.music.yandex.net/tracks/$trackId/download-info")
@@ -1925,12 +2069,30 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                         
                         val finalDownloadUrl = "https://$host/get-mp3/$sign/$ts$path"
                         
-                        downloadAndTagFile(activity, finalDownloadUrl, coverUrl, artist, title, downloadFolder, trackIndex, totalTracks, cancelCheck) { progress ->
+                        val ok = downloadAndTagFile(
+                            activity = activity,
+                            audioUrl = finalDownloadUrl,
+                            coverUrl = coverUrl,
+                            artist = artist,
+                            title = title,
+                            downloadFolder = downloadFolder,
+                            trackIndex = trackIndex,
+                            totalTracks = totalTracks,
+                            cancelCheck = cancelCheck,
+                            targetExtension = "mp3"
+                        ) { progress ->
                             onStateChange(1, progress)
                         }
-                        onStateChange(2, 100f)
-                        onSuccess()
-                        return@thread
+                        if (ok) {
+                            onStateChange(2, 100f)
+                            onSuccess()
+                            return@thread
+                        } else {
+                            if (attempts >= maxAttempts) {
+                                onError?.invoke()
+                                return@thread
+                            }
+                        }
                     } else {
                         android.util.Log.e("YaMusicLsposed", "XML parse error for track $trackId")
                         if (attempts >= maxAttempts) {
@@ -1965,6 +2127,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
     ) {
         kotlin.concurrent.thread {
             try {
+                val config = loadConfig(activity)
                 var effectiveToken = token
                 val exchanged = exchangeXTokenIfNeeded(effectiveToken) ?: effectiveToken
                 if (exchanged != effectiveToken) {
@@ -2124,6 +2287,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                             downloadTrackById(
                                 activity, tId, tTitle, tArtist, tCoverUrl, targetQuality, targetFolder, effectiveToken, currentIndex, total,
                                 { cancelPlaylistDownload },
+                                config.audioFormat,
                                 { _, p -> activeDownload.progress = p },
                                 advanceNext,
                                 advanceNext
