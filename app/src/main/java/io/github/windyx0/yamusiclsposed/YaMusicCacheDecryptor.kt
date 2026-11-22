@@ -9,9 +9,9 @@ import android.os.Environment
 import com.mpatric.mp3agic.ID3v24Tag
 import com.mpatric.mp3agic.Mp3File
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.SequenceInputStream
 import java.net.HttpURLConnection
@@ -178,7 +178,7 @@ object YaMusicCacheDecryptor {
             val extFilesDir = context.getExternalFilesDirs(null)
             for (efd in extFilesDir) {
                 if (efd != null && efd.exists()) {
-                    val p = efd.parentFile // user_XXXX
+                    val p = efd.parentFile
                     if (p != null) {
                         val mc = File(p, "music_cache")
                         if (mc.exists()) musicCacheDirs.add(mc)
@@ -224,10 +224,10 @@ object YaMusicCacheDecryptor {
 
             // 4. Assemble clean CachedTrackGroup items
             for ((exoId, chunkList) in chunksByExoId) {
-                val streamInfo = exoStreams[exoId] ?: continue // Skip if not recognized as track stream
+                val streamInfo = exoStreams[exoId] ?: continue
                 chunkList.sortBy { it.offset }
                 val totalSize = chunkList.sumOf { it.length }
-                if (totalSize < 100 * 1024) continue // Skip tiny fragments < 100KB
+                if (totalSize < 100 * 1024) continue
 
                 val meta = streamInfo.meta
                 val title = meta?.title ?: "Трек #${streamInfo.trackId}"
@@ -252,7 +252,6 @@ object YaMusicCacheDecryptor {
             android.util.Log.e("YaMusicLsposed", "scanCacheTracks error: ${e.message}")
         }
 
-        // Return sorted: offline saved first, then alphabetical by artist/title
         return result.sortedWith(
             compareByDescending<CachedTrackGroup> { it.isPermanent }
                 .thenBy { it.artist.lowercase() }
@@ -321,13 +320,14 @@ object YaMusicCacheDecryptor {
         }
         val (keyHex, apiCodec) = keyInfo
 
-        // 2. Fetch track info for cover art
+        // 2. Fetch track info and album cover (HD 1000x1000)
         onProgress(15f)
-        var coverUrl: String? = null
+        var coverBytes: ByteArray? = null
         try {
             val trackUrl = URL("https://api.music.yandex.net/tracks/${group.trackId}")
             val conn = trackUrl.openConnection() as HttpURLConnection
-            conn.connectTimeout = 6000
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
             conn.setRequestProperty("Authorization", "OAuth $token")
             if (conn.responseCode in 200..299) {
                 val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
@@ -337,11 +337,21 @@ object YaMusicCacheDecryptor {
                     val albums = tr.optJSONArray("albums")
                     if (albums != null && albums.length() > 0) {
                         val cUri = albums.getJSONObject(0).optString("coverUri", "")
-                        if (cUri.isNotEmpty()) coverUrl = "https://" + cUri.replace("%%", "1000x1000")
+                        if (cUri.isNotEmpty()) {
+                            val coverUrl = "https://" + cUri.replace("%%", "1000x1000")
+                            val coverConn = URL(coverUrl).openConnection() as HttpURLConnection
+                            coverConn.connectTimeout = 5000
+                            coverConn.readTimeout = 5000
+                            if (coverConn.responseCode in 200..299) {
+                                coverBytes = coverConn.inputStream.readBytes()
+                            }
+                        }
                     }
                 }
             }
-        } catch (e: Throwable) {}
+        } catch (e: Throwable) {
+            android.util.Log.e("YaMusicLsposed", "Cover fetch error: ${e.message}")
+        }
 
         // 3. Decrypt concatenated chunks into temporary file
         val tempDecrypted = File(context.cacheDir, "dec_${System.currentTimeMillis()}_${group.trackId}.tmp")
@@ -386,7 +396,7 @@ object YaMusicCacheDecryptor {
             onProgress(85f)
             if (!targetDir.exists()) targetDir.mkdirs()
 
-            // 4. Determine format and tag
+            // 4. Determine format, embed tags and cover art
             val cleanTitle = sanitizeFileName(group.title).ifEmpty { "Track ${group.trackId}" }
             val cleanArtist = sanitizeFileName(group.artist).ifEmpty { "Unknown Artist" }
 
@@ -400,14 +410,13 @@ object YaMusicCacheDecryptor {
 
             if (effectiveCodec == "flac") {
                 val rawBytes = tempDecrypted.readBytes()
-                val pureFlac = extractFlacFromMp4(rawBytes)
-                if (pureFlac != null) {
-                    outFile.writeBytes(pureFlac)
-                } else {
-                    tempDecrypted.copyTo(outFile, overwrite = true)
-                }
+                val pureFlac = extractFlacFromMp4(rawBytes) ?: rawBytes
+                val taggedFlac = tagFlacFile(pureFlac, group.title, group.artist, coverBytes)
+                outFile.writeBytes(taggedFlac)
             } else {
-                tempDecrypted.copyTo(outFile, overwrite = true)
+                val rawBytes = tempDecrypted.readBytes()
+                val taggedM4a = tagM4aFile(rawBytes, group.title, group.artist, coverBytes)
+                outFile.writeBytes(taggedM4a)
             }
 
             // 5. MediaScanner notification
@@ -429,6 +438,261 @@ object YaMusicCacheDecryptor {
         } finally {
             tempDecrypted.delete()
         }
+    }
+
+    fun tagFlacFile(flacBytes: ByteArray, title: String, artist: String, coverBytes: ByteArray?): ByteArray {
+        try {
+            if (flacBytes.size < 4 || flacBytes[0] != 0x66.toByte() || flacBytes[1] != 0x4C.toByte() ||
+                flacBytes[2] != 0x61.toByte() || flacBytes[3] != 0x43.toByte()) {
+                return flacBytes
+            }
+
+            var pos = 4
+            val blocks = mutableListOf<Pair<Int, ByteArray>>()
+
+            while (pos < flacBytes.size) {
+                val header = flacBytes[pos].toInt() and 0xFF
+                val isLast = (header and 0x80) != 0
+                val blockType = header and 0x7F
+                val length = ((flacBytes[pos + 1].toInt() and 0xFF) shl 16) or
+                             ((flacBytes[pos + 2].toInt() and 0xFF) shl 8) or
+                             (flacBytes[pos + 3].toInt() and 0xFF)
+
+                if (pos + 4 + length > flacBytes.size) break
+                val payload = flacBytes.copyOfRange(pos + 4, pos + 4 + length)
+                pos += 4 + length
+
+                // Retain STREAMINFO (type 0)
+                if (blockType == 0) {
+                    blocks.add(Pair(blockType, payload))
+                }
+                if (isLast) break
+            }
+
+            val audioFrames = flacBytes.copyOfRange(pos, flacBytes.size)
+
+            // Vorbis Comment block (type 4)
+            val vendor = "YaMusicLsposed".toByteArray(Charsets.UTF_8)
+            val comments = mutableListOf<ByteArray>()
+            comments.add("TITLE=$title".toByteArray(Charsets.UTF_8))
+            comments.add("ARTIST=$artist".toByteArray(Charsets.UTF_8))
+
+            val vcStream = ByteArrayOutputStream()
+            // 4 bytes LE vendor length + vendor
+            vcStream.write(intToLe(vendor.size))
+            vcStream.write(vendor)
+            // 4 bytes LE comment count
+            vcStream.write(intToLe(comments.size))
+            for (c in comments) {
+                vcStream.write(intToLe(c.size))
+                vcStream.write(c)
+            }
+            blocks.add(Pair(4, vcStream.toByteArray()))
+
+            // Picture block (type 6)
+            if (coverBytes != null && coverBytes.isNotEmpty()) {
+                val picStream = ByteArrayOutputStream()
+                picStream.write(intToBe(3)) // 3 = front cover
+                val mime = "image/jpeg".toByteArray(Charsets.US_ASCII)
+                picStream.write(intToBe(mime.size))
+                picStream.write(mime)
+                picStream.write(intToBe(0)) // description length 0
+                picStream.write(intToBe(1000)) // width
+                picStream.write(intToBe(1000)) // height
+                picStream.write(intToBe(24)) // depth
+                picStream.write(intToBe(0)) // colors
+                picStream.write(intToBe(coverBytes.size))
+                picStream.write(coverBytes)
+                blocks.add(Pair(6, picStream.toByteArray()))
+            }
+
+            // Reassemble FLAC
+            val out = ByteArrayOutputStream()
+            out.write("fLaC".toByteArray(Charsets.US_ASCII))
+            for (i in blocks.indices) {
+                val (bType, payload) = blocks[i]
+                val isLastBlock = (i == blocks.size - 1)
+                val flag = (if (isLastBlock) 0x80 else 0x00) or (bType and 0x7F)
+                out.write(flag)
+                out.write((payload.size ushr 16) and 0xFF)
+                out.write((payload.size ushr 8) and 0xFF)
+                out.write(payload.size and 0xFF)
+                out.write(payload)
+            }
+            out.write(audioFrames)
+            return out.toByteArray()
+        } catch (e: Throwable) {
+            android.util.Log.e("YaMusicLsposed", "tagFlacFile error: ${e.message}")
+            return flacBytes
+        }
+    }
+
+    fun tagM4aFile(m4aBytes: ByteArray, title: String, artist: String, coverBytes: ByteArray?): ByteArray {
+        try {
+            val orig = ByteBuffer.wrap(m4aBytes).order(ByteOrder.BIG_ENDIAN)
+
+            // Find moov box
+            var moovPos = -1
+            var moovSize = 0
+            while (orig.remaining() >= 8) {
+                val p = orig.position()
+                val sz = orig.getInt()
+                val type = ByteArray(4)
+                orig.get(type)
+                val typeStr = String(type, Charsets.US_ASCII)
+                if (typeStr == "moov") {
+                    moovPos = p
+                    moovSize = sz
+                    break
+                } else {
+                    val nextPos = p + sz
+                    if (nextPos <= p || nextPos > m4aBytes.size) break
+                    orig.position(nextPos)
+                }
+            }
+
+            if (moovPos == -1 || moovSize <= 8) return m4aBytes
+
+            // Find stco inside moov
+            orig.position(moovPos)
+            var stcoBoxPos = -1
+            val moovEnd = moovPos + moovSize
+            while (orig.position() < moovEnd && orig.remaining() >= 8) {
+                val p = orig.position()
+                val sz = orig.getInt()
+                val type = ByteArray(4)
+                orig.get(type)
+                val typeStr = String(type, Charsets.US_ASCII)
+                if (typeStr == "stco") {
+                    stcoBoxPos = p
+                    break
+                } else if (typeStr in listOf("trak", "mdia", "minf", "stbl")) {
+                    continue
+                } else {
+                    val nextPos = p + sz
+                    if (nextPos <= p || nextPos > moovEnd) break
+                    orig.position(nextPos)
+                }
+            }
+
+            // Construct ilst items
+            val ilstPayload = ByteArrayOutputStream()
+            ilstPayload.write(makeMetaItem("\u00a9nam", 1, title.toByteArray(Charsets.UTF_8)))
+            ilstPayload.write(makeMetaItem("\u00a9ART", 1, artist.toByteArray(Charsets.UTF_8)))
+            if (coverBytes != null && coverBytes.isNotEmpty()) {
+                ilstPayload.write(makeMetaItem("covr", 13, coverBytes)) // 13 = JPEG
+            }
+            val ilstBox = makeBox("ilst", ilstPayload.toByteArray())
+
+            // hdlr box: version 0 (1), flags 0 (3), pre_defined 0 (4), handler_type 'mdir' (4), manufacturer 'appl' (4), reserved (8), name "" (1)
+            val hdlrPayload = ByteBuffer.allocate(25).order(ByteOrder.BIG_ENDIAN)
+                .put(0)
+                .put(ByteArray(3))
+                .put(ByteArray(4))
+                .put("mdir".toByteArray(Charsets.US_ASCII))
+                .put("appl".toByteArray(Charsets.US_ASCII))
+                .put(ByteArray(8))
+                .put(0)
+                .array()
+            val hdlrBox = makeBox("hdlr", hdlrPayload)
+
+            val metaPayload = ByteArrayOutputStream()
+            metaPayload.write(ByteArray(4)) // version 0, flags 0
+            metaPayload.write(hdlrBox)
+            metaPayload.write(ilstBox)
+            val metaBox = makeBox("meta", metaPayload.toByteArray())
+
+            val udtaBox = makeBox("udta", metaBox)
+            val addedLen = udtaBox.size
+
+            val result = ByteArray(m4aBytes.size + addedLen)
+
+            // Shift stco chunk offsets
+            val modifiedM4a = m4aBytes.clone()
+            if (stcoBoxPos != -1 && stcoBoxPos + 16 <= modifiedM4a.size) {
+                val bb = ByteBuffer.wrap(modifiedM4a).order(ByteOrder.BIG_ENDIAN)
+                bb.position(stcoBoxPos + 12)
+                val entryCount = bb.getInt()
+                for (i in 0 until entryCount) {
+                    if (bb.remaining() < 4) break
+                    val pos = bb.position()
+                    val oldOffset = bb.getInt(pos)
+                    bb.putInt(pos, oldOffset + addedLen)
+                    bb.position(pos + 4)
+                }
+            }
+
+            // Copy up to moovPos
+            System.arraycopy(modifiedM4a, 0, result, 0, moovPos)
+
+            // Write new moov size
+            val newMoovSize = moovSize + addedLen
+            result[moovPos] = ((newMoovSize ushr 24) and 0xFF).toByte()
+            result[moovPos + 1] = ((newMoovSize ushr 16) and 0xFF).toByte()
+            result[moovPos + 2] = ((newMoovSize ushr 8) and 0xFF).toByte()
+            result[moovPos + 3] = (newMoovSize and 0xFF).toByte()
+
+            // Copy original moov content
+            System.arraycopy(modifiedM4a, moovPos + 4, result, moovPos + 4, moovSize - 4)
+
+            // Insert udtaBox at the end of moov
+            val insertPos = moovPos + moovSize
+            System.arraycopy(udtaBox, 0, result, insertPos, addedLen)
+
+            // Copy remainder (mdat, etc.)
+            val remainderLen = modifiedM4a.size - (moovPos + moovSize)
+            if (remainderLen > 0) {
+                System.arraycopy(modifiedM4a, moovPos + moovSize, result, insertPos + addedLen, remainderLen)
+            }
+
+            return result
+        } catch (e: Throwable) {
+            android.util.Log.e("YaMusicLsposed", "tagM4aFile error: ${e.message}")
+            return m4aBytes
+        }
+    }
+
+    private fun makeBox(type: String, payload: ByteArray): ByteArray {
+        val size = payload.size + 8
+        val out = ByteArray(size)
+        out[0] = ((size ushr 24) and 0xFF).toByte()
+        out[1] = ((size ushr 16) and 0xFF).toByte()
+        out[2] = ((size ushr 8) and 0xFF).toByte()
+        out[3] = (size and 0xFF).toByte()
+        val typeBytes = type.toByteArray(Charsets.US_ASCII)
+        System.arraycopy(typeBytes, 0, out, 4, 4)
+        System.arraycopy(payload, 0, out, 8, payload.size)
+        return out
+    }
+
+    private fun makeMetaItem(type: String, dataType: Int, payload: ByteArray): ByteArray {
+        val dataHeader = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+            .put(0) // version
+            .put(((dataType ushr 16) and 0xFF).toByte())
+            .put(((dataType ushr 8) and 0xFF).toByte())
+            .put((dataType and 0xFF).toByte())
+            .putInt(0) // reserved
+            .array()
+        val dataBox = makeBox("data", dataHeader + payload)
+        return makeBox(type, dataBox)
+    }
+
+    private fun intToLe(value: Int): ByteArray {
+        return byteArrayOf(
+            (value and 0xFF).toByte(),
+            ((value ushr 8) and 0xFF).toByte(),
+            ((value ushr 16) and 0xFF).toByte(),
+            ((value ushr 24) and 0xFF).toByte()
+        )
+    }
+
+    private fun intToBe(value: Int): ByteArray {
+        return byteArrayOf(
+            ((value ushr 24) and 0xFF).toByte(),
+            ((value ushr 16) and 0xFF).toByte(),
+            ((value ushr 8) and 0xFF).toByte(),
+            (value and 0xFF).toByte()
+        )
     }
 
     fun extractFlacFromMp4(bytes: ByteArray): ByteArray? {

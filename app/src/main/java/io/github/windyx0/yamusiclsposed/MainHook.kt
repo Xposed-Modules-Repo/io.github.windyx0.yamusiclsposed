@@ -1873,15 +1873,34 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                 }
             }
             
+            var coverBytes: ByteArray? = null
+            if (coverUrl != null) {
+                try {
+                    val coverConn = URL(coverUrl).openConnection() as HttpURLConnection
+                    coverConn.connectTimeout = 5000
+                    coverConn.readTimeout = 5000
+                    if (coverConn.responseCode in 200..299) {
+                        coverBytes = coverConn.inputStream.readBytes()
+                    }
+                } catch (e: Throwable) {
+                    android.util.Log.e("YaMusicLsposed", "Failed to download cover - ${e.message}")
+                }
+            }
+
             if (targetExtension == "flac") {
                 try {
                     val rawBytes = tempFile.readBytes()
-                    val pureFlac = YaMusicCacheDecryptor.extractFlacFromMp4(rawBytes)
-                    if (pureFlac != null) {
-                        outFile.writeBytes(pureFlac)
-                    } else {
-                        tempFile.copyTo(outFile, overwrite = true)
-                    }
+                    val pureFlac = YaMusicCacheDecryptor.extractFlacFromMp4(rawBytes) ?: rawBytes
+                    val taggedFlac = YaMusicCacheDecryptor.tagFlacFile(pureFlac, title, artist, coverBytes)
+                    outFile.writeBytes(taggedFlac)
+                } catch (e: Throwable) {
+                    tempFile.copyTo(outFile, overwrite = true)
+                }
+            } else if (targetExtension == "m4a") {
+                try {
+                    val rawBytes = tempFile.readBytes()
+                    val taggedM4a = YaMusicCacheDecryptor.tagM4aFile(rawBytes, title, artist, coverBytes)
+                    outFile.writeBytes(taggedM4a)
                 } catch (e: Throwable) {
                     tempFile.copyTo(outFile, overwrite = true)
                 }
@@ -1892,14 +1911,8 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
                     id3v2Tag.artist = artist
                     id3v2Tag.title = title
                     
-                    if (coverUrl != null) {
-                        try {
-                            val coverConn = URL(coverUrl).openConnection() as HttpURLConnection
-                            val coverBytes = coverConn.inputStream.readBytes()
-                            id3v2Tag.setAlbumImage(coverBytes, "image/jpeg")
-                        } catch (e: Throwable) {
-                            android.util.Log.e("YaMusicLsposed", "Failed to download cover - ${e.message}")
-                        }
+                    if (coverBytes != null) {
+                        id3v2Tag.setAlbumImage(coverBytes, "image/jpeg")
                     }
                     
                     mp3file.id3v2Tag = id3v2Tag
