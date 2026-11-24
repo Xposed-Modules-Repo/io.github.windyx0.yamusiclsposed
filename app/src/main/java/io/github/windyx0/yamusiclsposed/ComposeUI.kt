@@ -2158,7 +2158,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text("Поддержать (Сбер): 2202 2088 6471 5629", maxLines = 1, softWrap = false, fontSize = 12.sp)
+                                                        Text("Сбер: 2202 2088 6471 5629", maxLines = 1, softWrap = false, fontSize = 12.sp, fontWeight = FontWeight.Medium)
 
                                                     }
 
