@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.windyx0.yamusiclsposed"
         minSdk = 24
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.4.1"
+        versionCode = 7
+        versionName = "1.4.2"
     }
 
     signingConfigs {

@@ -238,7 +238,7 @@ fun openUrl(context: Context, url: String) {
 
 
 
-fun fetchLatestRelease(currentVersionCode: Int = 6, currentVersionName: String = "1.4.1", channel: String = "release"): UpdateState {
+fun fetchLatestRelease(currentVersionCode: Int = 7, currentVersionName: String = "1.4.2", channel: String = "release"): UpdateState {
 
     return try {
 
@@ -482,11 +482,27 @@ val changelogHistory = listOf(
 
     ChangelogItem(
 
-        version = "v1.4.1",
+        version = "v1.4.2",
 
         date = "Ноябрь 2026",
 
         isCurrent = true,
+
+        points = listOf(
+
+            "Поддержка автора: добавлена карта Сбера (2202 2088 6471 5629) с быстрым копированием номера по клику вместо DonationAlerts."
+
+        )
+
+    ),
+
+    ChangelogItem(
+
+        version = "v1.4.1",
+
+        date = "Ноябрь 2026",
+
+        isCurrent = false,
 
         points = listOf(
 
@@ -660,7 +676,7 @@ fun YaMusicSettingsScreen(
 
                 withContext(Dispatchers.IO) {
 
-                    updateState = fetchLatestRelease(6, "1.4.1", updateChannel)
+                    updateState = fetchLatestRelease(7, "1.4.2", updateChannel)
 
                 }
 
@@ -844,7 +860,7 @@ fun YaMusicSettingsScreen(
 
                                     Text(
 
-                                        text = "v1.4.1",
+                                        text = "v1.4.2",
 
                                         style = MaterialTheme.typography.labelMedium,
 
@@ -1668,7 +1684,7 @@ fun YaMusicSettingsScreen(
 
                                             Text(
 
-                                                text = "Текущая версия: v1.4.1 (код 6)",
+                                                text = "Текущая версия: v1.4.2 (код 7)",
 
                                                 style = MaterialTheme.typography.bodyMedium,
 
@@ -1888,7 +1904,7 @@ fun YaMusicSettingsScreen(
 
                                                         withContext(Dispatchers.IO) {
 
-                                                            updateState = fetchLatestRelease(6, "1.4.1", ch)
+                                                            updateState = fetchLatestRelease(7, "1.4.2", ch)
 
                                                         }
 
@@ -1930,7 +1946,7 @@ fun YaMusicSettingsScreen(
 
                                                     withContext(Dispatchers.IO) {
 
-                                                        updateState = fetchLatestRelease(6, "1.4.1", updateChannel)
+                                                        updateState = fetchLatestRelease(7, "1.4.2", updateChannel)
 
                                                     }
 
@@ -1978,7 +1994,7 @@ fun YaMusicSettingsScreen(
 
                                     Text(
 
-                                        text = "Версия 1.4.1 (код 6) • Разработчик: Windyx0",
+                                        text = "Версия 1.4.2 (код 7) • Разработчик: Windyx0",
 
                                         style = MaterialTheme.typography.bodyMedium,
 
@@ -2128,7 +2144,13 @@ fun YaMusicSettingsScreen(
 
                                                 onClick = {
 
-                                                    openUrl(activity, "https://www.donationalerts.com/r/windyx0")
+                                                    val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+
+                                                    val clip = android.content.ClipData.newPlainText("Sber Card", "2202208864715629")
+
+                                                    clipboard?.setPrimaryClip(clip)
+
+                                                    Toast.makeText(activity, "Номер карты Сбера скопирован!", Toast.LENGTH_SHORT).show()
 
                                                 },
 
@@ -2136,7 +2158,7 @@ fun YaMusicSettingsScreen(
 
                                                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
 
-                                                        Text("Поддержать автора (DonationAlerts)", maxLines = 1, softWrap = false, fontSize = 12.sp)
+                                                        Text("Поддержать (Сбер): 2202 2088 6471 5629", maxLines = 1, softWrap = false, fontSize = 12.sp)
 
                                                     }
 
